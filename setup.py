@@ -12,7 +12,7 @@ def pre_install():
 	try:
 		import omf
 	except:
-		check_call("git clone --depth=1 https://github.com/dpinney/omf.git".split())
+		check_call("git clone --depth=1 https://github.com/nreca-bts/omf.git".split())
 		check_call("cd omf; python install.py".split())
 
 class PreDevelopCommand(develop):
@@ -43,7 +43,7 @@ def install_server():
 	# export REPO={mgu_path}
 	# Install all packages
 	DEBIAN_FRONTEND=noninteractive sudo apt-get install -y systemd letsencrypt python3-pip authbind
-	git clone --depth 1 https://github.com/dpinney/omf.git
+	git clone --depth 1 https://github.com/nreca-bts/omf.git
 	cd omf; sudo python3 install.py
 	# Enable Services
 	sudo ln -s ${mgu_path}/systemd/microgridup.service /etc/systemd/system/microgridup.service
