@@ -358,12 +358,12 @@ install the MicrogridUP app.
 2.  Open a command prompt and enter this command to download the
     MicrogridUP app:
     ```
-    docker pull ghcr.io/dpinney/microgridup:main
+    docker pull ghcr.io/nreca-bts/microgridup:main
     ```
 
 3.  To start MicrogridUP, run this command:
     ```
-    docker run -d -p 5001:5000 --name mgucont ghcr.io/dpinney/microgridup:main
+    docker run -d -p 5001:5000 --name mgucont ghcr.io/nreca-bts/microgridup:main
     ```
 
 4.  Once the command completes, open a web browser and navigate to
@@ -1066,7 +1066,7 @@ be entered as just the label 5e6134175457a3cf56019407.</td>
 <td><strong>Load Data (.csv)</strong></td>
 <td>(none)</td>
 <td>Please upload a .csv file representing the hourly load shape. See <a
-href="https://github.com/dpinney/microgridup/blob/main/docs/input_formats.md">https://github.com/dpinney/microgridup/blob/main/docs/input_formats.md</a>
+href="https://github.com/nreca-bts/microgridup/blob/main/docs/input_formats.md">https://github.com/nreca-bts/microgridup/blob/main/docs/input_formats.md</a>
 for formatting details.</td>
 </tr>
 <tr class="even">
@@ -1111,7 +1111,7 @@ REopt Web Tool User Manual.</u></a></td>
 <td><strong>Historical Outage Data (.csv)</strong></td>
 <td>(none)</td>
 <td><p>Please upload a .csv file representing historical outages. See <a
-href="https://github.com/dpinney/microgridup/blob/main/docs/input_formats.md">https://github.com/dpinney/microgridup/blob/main/docs/input_formats.md</a></p>
+href="https://github.com/nreca-bts/microgridup/blob/main/docs/input_formats.md">https://github.com/nreca-bts/microgridup/blob/main/docs/input_formats.md</a></p>
 <p>for formatting details.</p></td>
 </tr>
 <tr class="odd">
