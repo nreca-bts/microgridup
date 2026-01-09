@@ -50,9 +50,9 @@ class Docker:
         # - Pull the image
         try:
             self.progress_callback('Checking for the latest MicrogridUp image...')
-            self.start_subprocess(f'{self.docker_cli_cmd} pull ghcr.io/dpinney/microgridup:main')
+            self.start_subprocess(f'{self.docker_cli_cmd} pull ghcr.io/nreca-bts/microgridup:main')
         except subprocess.CalledProcessError as e:
-            self.progress_callback('The MicrogridUp app could not pull the ghcr.io/dpinney/microgridup:main Docker image. Check that Docker Desktop is working properly, then restart the app.')
+            self.progress_callback('The MicrogridUp app could not pull the ghcr.io/nreca-bts/microgridup:main Docker image. Check that Docker Desktop is working properly, then restart the app.')
             raise e
         # - Check if the Docker volume already exists
         #   - If it does exist, we don't need to do anything
@@ -69,12 +69,12 @@ class Docker:
                 raise e
             try:
                 self.progress_callback('Filling the mgu-volume volume with examples...')
-                self.start_subprocess(f'{self.docker_cli_cmd} run --rm --mount type=volume,src="mgu-volume",dst="/mgu-volume" --entrypoint bash ghcr.io/dpinney/microgridup:main "-c" "cp -r /data/projects/* /mgu-volume/"')
+                self.start_subprocess(f'{self.docker_cli_cmd} run --rm --mount type=volume,src="mgu-volume",dst="/mgu-volume" --entrypoint bash ghcr.io/nreca-bts/microgridup:main "-c" "cp -r /data/projects/* /mgu-volume/"')
             except subprocess.CalledProcessError as e:
                 self.progress_callback('The MicrogridUp app could not copy data from the Docker image at data/projects into the persistent volume mounted at data/projects.')
                 raise e
         # - Start the container in detached mode with the persistent volume
-        start_container_cmd = f'{self.docker_cli_cmd} run -d --rm -p 5000:5000 --name mgu-container --mount type=volume,source="mgu-volume",target="/data/projects" ghcr.io/dpinney/microgridup:main'
+        start_container_cmd = f'{self.docker_cli_cmd} run -d --rm -p 5000:5000 --name mgu-container --mount type=volume,source="mgu-volume",target="/data/projects" ghcr.io/nreca-bts/microgridup:main'
         try:
             self.progress_callback('Starting the mgu-container on port 5000...')
             # - We want to block until we get the stdout
