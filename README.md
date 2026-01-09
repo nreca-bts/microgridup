@@ -7,8 +7,8 @@ MicrogridUP is planning software that quickly identifies detailed microgrid inve
 ## Installation
 
 1. Install [Docker](https://docs.docker.com/get-docker/)
-1. Get the app `docker pull ghcr.io/dpinney/microgridup:main`
-1. Create the container and start it with `docker run -d -p 5001:5000 --name mgucont ghcr.io/dpinney/microgridup:main`
+1. Get the app `docker pull ghcr.io/nreca-bts/microgridup:main`
+1. Create the container and start it with `docker run -d -p 5001:5000 --name mgucont ghcr.io/nreca-bts/microgridup:main`
 1. The web app will then be running at http://127.0.0.1:5001
 1. You can stop/start the app via `docker stop mgucont`/`docker start mgucont`
 
