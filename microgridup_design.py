@@ -131,6 +131,60 @@ def _maybe_inject_wind_speed_fallback(reopt_dirname, lat, lon, logger):
 	)
 
 
+def _get_max_reopt_workers(job_count, logger):
+	'''
+	Each REopt run starts its own Julia process, which peaks at about 1.5 GB. Starting one per microgrid at once gets them killed for lack of memory
+	on a small machine (e.g. Docker Desktop with 2 GB), so only start as many at once as the available memory allows.
+
+	:param job_count: the number of REopt runs
+	:type job_count: int
+	:param logger: a logger
+	:type logger: Logger
+	:return: how many REopt runs to start at once (at least 1)
+	:rtype: int
+	'''
+	assert isinstance(job_count, int)
+	assert isinstance(logger, logging.Logger)
+	bytes_per_run = 1.5 * 2**30
+	max_workers = min(job_count, os.cpu_count() or 1)
+	available_bytes = _get_available_memory_bytes()
+	if available_bytes is not None:
+		max_workers = min(max_workers, int(available_bytes // bytes_per_run))
+	max_workers = max(1, max_workers)
+	if available_bytes is not None:
+		logger.info(f'{available_bytes / 2**30:.1f} GB of memory available. Running {max_workers} of {job_count} REopt runs at a time.')
+	return max_workers
+
+
+def _get_available_memory_bytes():
+	'''
+	:return: the memory available to new processes, or None where it can't be read (these files only exist on Linux). This is the smaller of (1)
+		MemAvailable in /proc/meminfo, which inside Docker Desktop describes its virtual machine, and (2) the room left under a container memory limit
+		(docker run --memory), which /proc/meminfo doesn't show. Inactive file cache can be reclaimed, so it doesn't count as used
+	:rtype: int or None
+	'''
+	candidates = []
+	try:
+		with open('/proc/meminfo') as f:
+			for line in f:
+				if line.startswith('MemAvailable:'):
+					candidates.append(int(line.split()[1]) * 1024)
+	except (OSError, ValueError):
+		pass
+	try:
+		with open('/sys/fs/cgroup/memory.max') as f:
+			limit = f.read().strip()
+		if limit != 'max':
+			with open('/sys/fs/cgroup/memory.current') as f:
+				current = int(f.read())
+			with open('/sys/fs/cgroup/memory.stat') as f:
+				stat = dict(line.split() for line in f)
+			candidates.append(int(limit) - current + int(stat.get('inactive_file', 0)))
+	except (OSError, ValueError):
+		pass
+	return min(candidates) if candidates else None
+
+
 def run_reopt(data, logger, invalidate_cache):
 	'''
 	:param data: all of the data for a model containing the following relevant keys
@@ -161,7 +215,9 @@ def run_reopt(data, logger, invalidate_cache):
 		# - Uncomment to run in single-process mode
 		# _run(immutable_data, mg_name, logger, invalidate_cache)
 	# - Uncomment to run in multiprocessing mode
-	with concurrent.futures.ProcessPoolExecutor() as executor:
+	# - Cap the number of simultaneous REopt runs based on available memory if needed
+	max_workers = _get_max_reopt_workers(len(process_argument_lists), logger)
+	with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
 		future_list = []
 		for process_argument_list in process_argument_lists:
 			future_list.append(executor.submit(_multiprocessing_run, *process_argument_list))
