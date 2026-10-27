@@ -11,6 +11,7 @@ import microgridup_control
 import microgridup_design
 import microgridup_hosting_cap
 import microgridup_resilience
+import microgridup_validation
 
 
 # - All path referencing should be done though these constants in this module
@@ -105,8 +106,6 @@ def main(data, invalidate_cache=True, open_results=False):
 		json.dump(inputs, inputs_file, indent=4)
 	# - Now that the data object has been set up, we shouldn't need to change it anymore, so create an immutable copy to pass around
 	immutable_data = get_immutable_dict(data)
-	# Validate microgrids - fail fast if any microgrid lacks loads
-	_validate_microgrids_have_loads(immutable_data)
 	# Setup logging.
 	log_file = f'{absolute_model_directory}/logs.log'
 	if os.path.exists(log_file):
@@ -127,6 +126,10 @@ def main(data, invalidate_cache=True, open_results=False):
 		pass
 	# Run the full MicrogridUP analysis.
 	try:
+		# - Check the inputs before anything runs. An error crashes the run, warnings are passed on to the user
+		microgridup_validation.raise_for_invalid_inputs(immutable_data)
+		for warning in microgridup_validation.get_input_warnings(immutable_data):
+			_warn_user(warning, logger)
 		# Apply load growth to the loads.csv file
 		microgridup_design.apply_load_growth(immutable_data, logger)
 		# - Calculate hosting capacity for the initial circuit uploaded by the user or created via the GUI
@@ -257,19 +260,20 @@ def main(data, invalidate_cache=True, open_results=False):
 		os.system(f'rm "{absolute_model_directory}/0running.txt"')
 
 
-def _validate_microgrids_have_loads(data):
-    '''Raise ValueError if any microgrid is missing loads. Assumption: every microgrid must include at least one load.'''
-    missing = []
-    for mg_name, mg in data.get('MICROGRIDS', {}).items():
-        loads = mg.get('loads') if isinstance(mg, dict) else getattr(mg, 'get', lambda *_: ())('loads', ())
-        # Treat empty tuple/list or None as missing.
-        if not loads:
-            missing.append(mg_name)
-    if missing:
-        raise ValueError(
-            f'The following microgrids have no loads assigned: {missing}. '
-            'At least one load must be placed in each microgrid.'
-        )
+def _warn_user(warning, logger):
+	'''
+	Print the warning, log it to logs.log, and add it to user_warnings.txt, which the overview shows under "User Warnings"
+
+	:param warning: the warning message
+	:type warning: str
+	:param logger: a logger
+	:type logger: Logger
+	:rtype: None
+	'''
+	print(warning)
+	logger.warning(warning)
+	with open('user_warnings.txt', 'a') as myfile:
+		myfile.write(f'{warning}\n')
 
 
 def setup_logging(log_file, mg_name=None):
