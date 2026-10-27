@@ -285,8 +285,9 @@ class CsvLoadParser {
                 skipEmptyLines: true,
             });
         });
-        if (data.data.length < 8760) {
-            throw Error('CSV parsing failed. A CSV must have at least 8760 rows, not including the required heading row.');
+        // - omf's microgridDesign model needs exactly one year of hourly data, so every REopt run fails for any other number of rows
+        if (data.data.length - 1 !== 8760) {
+            throw Error(`CSV parsing failed. The load profile CSV must have exactly 8760 rows of hourly data, not including the required heading row. This file has ${Math.max(data.data.length - 1, 0)}.`);
         }
         const lowercaseHeadings = data.data[0].map(heading => String(heading ?? '').trim().toLowerCase());
         if (new Set(lowercaseHeadings).size !== lowercaseHeadings.length) {
@@ -295,39 +296,34 @@ class CsvLoadParser {
         // - Use triangular number formula instead of comparing array contents
         const timeseriesSignature1 = ((8760 ** 2 ) + 8760) / 2;
         const timeseriesSignature2 = ((8759 ** 2 ) + 8759) / 2;
-        if ((data.data.length - 1) % 8760 === 0) {
-            if (new Set(data.data[0]).size !== data.data[0].length) {
-                throw Error('Please ensure the load profile CSV headings are all unique.');
-            }
-            for (let i = 0; i < data.data[0].length; i++) {
-                const loadProfile = [];
-                for (let j = 1; j < data.data.length; j++) {
-                    const kw = data.data[j][i];
-                    const numKw = +kw;
-                    if (isNaN(numKw) || kw === null) {
-                        throw Error(`CSV parsing failed. Could not parse the value "${kw}" in row "${j}" of column named "${data.data[0][i]}" in file "${file.name}" into a number.`); 
-                    }
-                    loadProfile.push(numKw); 
+        if (new Set(data.data[0]).size !== data.data[0].length) {
+            throw Error('Please ensure the load profile CSV headings are all unique.');
+        }
+        for (let i = 0; i < data.data[0].length; i++) {
+            const loadProfile = [];
+            for (let j = 1; j < data.data.length; j++) {
+                const kw = data.data[j][i];
+                const numKw = +kw;
+                if (isNaN(numKw) || kw === null) {
+                    throw Error(`CSV parsing failed. Could not parse the value "${kw}" in row "${j}" of column named "${data.data[0][i]}" in file "${file.name}" into a number.`); 
                 }
-                const sum = loadProfile.reduce((acc, cur) => acc + cur);
-                if (sum !== timeseriesSignature1 && sum !== timeseriesSignature2) {
-                    const element = new CircuitElement({
-                        name: data.data[0][i].toString(),
-                        namespace: 'element',
-                        type: 'load'
-                    });
-                    element.setProperty('loadProfile', loadProfile);
-                    element.setProperty('kw', Math.max(...loadProfile));
-                    // - When using the manual circuit builder, assume that there is at least one single phase load and one three phase load in the
-                    //   composite load. This makes debugging easier
-                    element.setProperty('singlePhaseLoadCount', 1);
-                    element.setProperty('threePhaseLoadCount', 1);
-                    csvLoadsElements.push(element);
-                }
+                loadProfile.push(numKw); 
             }
-        // - One year of data is incomplete
-        } else {
-            throw Error('The load profile CSV must contain a number of rows that is a multiple of 8760 (not including the required heading row).');
+            const sum = loadProfile.reduce((acc, cur) => acc + cur);
+            if (sum !== timeseriesSignature1 && sum !== timeseriesSignature2) {
+                const element = new CircuitElement({
+                    name: data.data[0][i].toString(),
+                    namespace: 'element',
+                    type: 'load'
+                });
+                element.setProperty('loadProfile', loadProfile);
+                element.setProperty('kw', Math.max(...loadProfile));
+                // - When using the manual circuit builder, assume that there is at least one single phase load and one three phase load in the
+                //   composite load. This makes debugging easier
+                element.setProperty('singlePhaseLoadCount', 1);
+                element.setProperty('threePhaseLoadCount', 1);
+                csvLoadsElements.push(element);
+            }
         }
         this.#csvLoadsElements = csvLoadsElements;
         for (const ob of this.#observers) {
@@ -366,14 +362,14 @@ class OutageLocationInputView {
         label.textContent = 'Outage Location(s) ';
         const span = document.createElement('span');
         span.classList.add('classic');
-        span.textContent = 'Node number in distribution map where typical outage would take place. Use commas to separate multiple locations.';
+        span.textContent = 'Name of the line in the circuit where a typical outage would take place. Use commas to separate multiple lines.';
         label.append(span);
         modal.divElement.append(label);
         const input = document.createElement('input');
         this.#input = input;
         input.id = 'FAULTED_LINES';
         input.name = 'FAULTED_LINES';
-        input.pattern = '\\w+(?:,\\w+)*'
+        input.pattern = '[\\w\\-]+(?:,[\\w\\-]+)*'
         input.required = true;
         this.updateInput();
         modal.divElement.append(input);
