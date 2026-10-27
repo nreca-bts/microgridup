@@ -261,7 +261,7 @@
 			height: 750px;
 			border: 1px solid #ccc;
 		}
-		.partitionDescription {
+		.partitionDescription, #partitionWarnings {
 			max-width: 1000px;
 		}
 	</style>
@@ -1231,6 +1231,22 @@
 						const previewDiv = document.getElementById('partitionsPreviewDiv');
 						previewDiv.innerHTML = '';
 						previewDiv.appendChild(iframe);
+						// List any partition warnings under the map.
+						if (responseJson.warnings && responseJson.warnings.length > 0) {
+							const warningsDiv = document.createElement('div');
+							warningsDiv.id = 'partitionWarnings';
+							const warningsHeading = document.createElement('strong');
+							warningsHeading.textContent = 'Warnings';
+							warningsDiv.appendChild(warningsHeading);
+							const warningsList = document.createElement('ul');
+							for (const warning of responseJson.warnings) {
+								const item = document.createElement('li');
+								item.textContent = warning;
+								warningsList.appendChild(item);
+							}
+							warningsDiv.appendChild(warningsList);
+							previewDiv.appendChild(warningsDiv);
+						}
 						window.createReoptParametersMVC(responseJson.MICROGRIDS);
 					}
 				} else {
