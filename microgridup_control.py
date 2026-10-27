@@ -8,6 +8,7 @@ from plotly import graph_objects, offline, subplots
 from scipy.interpolate import RegularGridInterpolator
 from omf.solvers.opendss import dssConvert, _getByName, newQstsPlot
 import microgridup
+import microgridup_validation
 
 # Constants for interpolators.
 DIESEL_GENERATOR_SIZES = np.array([20, 30, 40, 60, 75, 100, 125, 135, 150, 175, 200, 230, 250, 300, 350, 400, 500, 600, 750, 1000, 1250, 1500, 1750, 2000, 2250]) # https://www.generatorsource.com/Diesel_Fuel_Consumption.aspx
@@ -1264,30 +1265,6 @@ def make_glc_plots(csvName, chart_name, y_axis_name, glc_traces, outage_start, o
 	fig.add_vline(x=end_time, line=outage_line_style)
 	offline.plot(fig, filename=f'{csvName}.plot.html', auto_open=False)
 
-def faulted_lines_in_graph(path_to_dss, faulted_lines):
-	'''
-	Return whether all of the faulted lines exist in the DSS file
-
-	:param path_to_dss: the path to the dss file that has had all of the REopt-recommended generation objects added to it
-	:type path_to_dss: str
-	:param faulted_lines: the names of the lines that are acting as switches to island the microgrid
-	:type faulted_lines: list
-	:return: True if the number of lines in faulted_lines is equal to the number of lines in faulted lines that were found in the omd, else False
-	:rtype: bool
-	'''
-	assert isinstance(path_to_dss, str)
-	assert isinstance(faulted_lines, tuple)
-	omd = dssConvert.dssToOmd(path_to_dss, '', write_out=False)
-	for line_name in faulted_lines:
-		found_match = False
-		for key in omd:
-			if omd[key].get('name', '') == line_name:
-				found_match = True
-				break
-		if not found_match:
-			return False
-	return True
-
 def calculate_land_for_diesel_storage(diesel_gal):
 	'''
 	Calculate the land area needed to store a volume of diesel. 
@@ -1590,7 +1567,7 @@ def play(data, outage_start, outage_length, logger):
 	assert isinstance(logger, logging.Logger)
 	path_to_dss = 'circuit_plus_mgAll.dss'
 	faulted_lines = data['FAULTED_LINES']
-	if not faulted_lines_in_graph(path_to_dss, faulted_lines):
+	if not microgridup_validation.faulted_lines_in_graph(path_to_dss, faulted_lines):
 		raise ValueError(f'One or more of the provided outage location(s) named "{faulted_lines}" are not in the provided circuit. Control simulation skipped.')
 	microgrids = data['MICROGRIDS']
 	print('CONTROLLING ON', microgrids)

@@ -14,6 +14,11 @@ import omf.solvers.reopt_jl as reopt_jl
 import concurrent.futures
 
 
+class ReoptRunError(Exception):
+	'''Raised by _raise_for_failed_reopt_run() with a message that says why a REopt run failed.'''
+	pass
+
+
 def _wind_toolkit_covers(lat, lon):
 	'''Return True if the NREL Wind Toolkit API serves data for (lat, lon).
 	Makes a lightweight probe request and treats HTTP 400 as "not covered".'''
@@ -131,6 +136,60 @@ def _maybe_inject_wind_speed_fallback(reopt_dirname, lat, lon, logger):
 	)
 
 
+def _get_max_reopt_workers(job_count, logger):
+	'''
+	Each REopt run starts its own Julia process, which peaks at about 1.5 GB. Starting one per microgrid at once gets them killed for lack of memory
+	on a small machine (e.g. Docker Desktop with 2 GB), so only start as many at once as the available memory allows.
+
+	:param job_count: the number of REopt runs
+	:type job_count: int
+	:param logger: a logger
+	:type logger: Logger
+	:return: how many REopt runs to start at once (at least 1)
+	:rtype: int
+	'''
+	assert isinstance(job_count, int)
+	assert isinstance(logger, logging.Logger)
+	bytes_per_run = 1.5 * 2**30
+	max_workers = min(job_count, os.cpu_count() or 1)
+	available_bytes = _get_available_memory_bytes()
+	if available_bytes is not None:
+		max_workers = min(max_workers, int(available_bytes // bytes_per_run))
+	max_workers = max(1, max_workers)
+	if available_bytes is not None:
+		logger.warning(f'{available_bytes / 2**30:.1f} GB of memory available. Running {max_workers} of {job_count} REopt runs at a time.')
+	return max_workers
+
+
+def _get_available_memory_bytes():
+	'''
+	:return: the memory available to new processes, or None where it can't be read (these files only exist on Linux). This is the smaller of (1)
+		MemAvailable in /proc/meminfo, which inside Docker Desktop describes its virtual machine, and (2) the room left under a container memory limit
+		(docker run --memory), which /proc/meminfo doesn't show. Inactive file cache can be reclaimed, so it doesn't count as used
+	:rtype: int or None
+	'''
+	candidates = []
+	try:
+		with open('/proc/meminfo') as f:
+			for line in f:
+				if line.startswith('MemAvailable:'):
+					candidates.append(int(line.split()[1]) * 1024)
+	except (OSError, ValueError):
+		pass
+	try:
+		with open('/sys/fs/cgroup/memory.max') as f:
+			limit = f.read().strip()
+		if limit != 'max':
+			with open('/sys/fs/cgroup/memory.current') as f:
+				current = int(f.read())
+			with open('/sys/fs/cgroup/memory.stat') as f:
+				stat = dict(line.split() for line in f)
+			candidates.append(int(limit) - current + int(stat.get('inactive_file', 0)))
+	except (OSError, ValueError):
+		pass
+	return min(candidates) if candidates else None
+
+
 def run_reopt(data, logger, invalidate_cache):
 	'''
 	:param data: all of the data for a model containing the following relevant keys
@@ -161,17 +220,28 @@ def run_reopt(data, logger, invalidate_cache):
 		# - Uncomment to run in single-process mode
 		# _run(immutable_data, mg_name, logger, invalidate_cache)
 	# - Uncomment to run in multiprocessing mode
-	with concurrent.futures.ProcessPoolExecutor() as executor:
+	# - Cap the number of simultaneous REopt runs based on available memory if needed
+	max_workers = _get_max_reopt_workers(len(process_argument_lists), logger)
+	with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
 		future_list = []
 		for process_argument_list in process_argument_lists:
 			future_list.append(executor.submit(_multiprocessing_run, *process_argument_list))
-		for f in concurrent.futures.as_completed(future_list):
-			if f.exception() is not None:
-				try:
-					microgrid_name = f.exception().filename.split("/")[0].split("_")[1]
-				except AttributeError:
-					microgrid_name = 'Unknown'
-				raise Exception(f'The REopt optimization for the microgrid {microgrid_name} failed because (1) the optimizer determined there was no feasible solution for the given inputs or (2) the solver could not complete within the user-defined maximum run-time.')
+		# - Wait for every run, then stop with each failed microgrid's error. The first unexpected error is chained so its traceback is logged too
+		errors = []
+		unexpected_error = None
+		for mg_name, f in zip(data['MICROGRIDS'], future_list):
+			e = f.exception()
+			if e is None:
+				continue
+			if isinstance(e, ReoptRunError):
+				errors.append(f'Microgrid "{mg_name}": {e}')
+			elif isinstance(e, concurrent.futures.process.BrokenProcessPool):
+				errors.append(f'Microgrid "{mg_name}": the process running its REopt step stopped abruptly, most likely because there wasn\'t enough memory.')
+			else:
+				errors.append(f'Microgrid "{mg_name}": {type(e).__name__}: {e}')
+				unexpected_error = unexpected_error or e
+		if errors:
+			raise Exception('\n'.join(errors)) from unexpected_error
 
 
 def create_economic_microgrid(data, logger, invalidate_cache):
@@ -255,6 +325,7 @@ def create_economic_microgrid(data, logger, invalidate_cache):
 			json.dump(allInputData, f, indent=4)
 		_maybe_inject_wind_speed_fallback('reopt_mgEconomic', lat, lon, logger)
 		__neoMetaModel__.runForeground('reopt_mgEconomic')
+		_raise_for_failed_reopt_run('reopt_mgEconomic')
 		_microgrid_design_output('reopt_mgEconomic', logger)
 
 
@@ -323,8 +394,50 @@ def _run(data, mg_name, logger, invalidate_cache):
 	# - Run REopt
 	_maybe_inject_wind_speed_fallback(reopt_dirname, lat, lon, logger)
 	omf.models.__neoMetaModel__.runForeground(reopt_dirname)
+	_raise_for_failed_reopt_run(reopt_dirname)
 	# - Write output
 	_microgrid_design_output(reopt_dirname, logger)
+
+
+def _raise_for_failed_reopt_run(reopt_dirname):
+	'''
+	Raise a ReoptRunError that says why a REopt run failed when its folder has no allOutputData.json. omf doesn't raise an exception when a REopt run
+	fails: it writes the error to stderr.txt and leaves allOutputData.json unwritten
+
+	:param reopt_dirname: the folder of the REopt run
+	:type reopt_dirname: str
+	:rtype: None
+	'''
+	assert isinstance(reopt_dirname, str)
+	if os.path.isfile(f'{reopt_dirname}/allOutputData.json'):
+		return
+	# - REopt reports status "error" when it didn't find a solution. omf then fails reading the missing results, so stderr.txt doesn't help
+	try:
+		with open(f'{reopt_dirname}/results.json') as f:
+			status = json.load(f).get('status')
+	except (OSError, ValueError, AttributeError):
+		status = None
+	if status == 'error':
+		raise ReoptRunError(f'REopt didn\'t find a solution ({reopt_dirname}/results.json has status "error"). Most likely no design meets the inputs, or the solver ran out of time (Maximum REopt Run-time).')
+	try:
+		with open(f'{reopt_dirname}/stderr.txt') as f:
+			lines = f.read().rstrip().splitlines()
+	except OSError:
+		raise ReoptRunError(f'REopt stopped without writing {reopt_dirname}/allOutputData.json or {reopt_dirname}/stderr.txt.') from None
+	if lines and lines[-1].strip().endswith('Killed'):
+		raise ReoptRunError(f'The operating system stopped REopt ("Killed" at the end of {reopt_dirname}/stderr.txt), most likely because there wasn\'t enough memory.')
+	# - When Julia fails, omf puts all of Julia's output in a Python error. Julia's own error starts at "ERROR: " and ends where its
+	#   "Stacktrace:" starts. Otherwise the last lines of the Python traceback show the error and where it happened
+	julia_error_start = next((i for i, line in enumerate(lines) if 'ERROR: ' in line), None)
+	if julia_error_start is None:
+		excerpt = lines[-3:]
+	else:
+		excerpt = [lines[julia_error_start][lines[julia_error_start].index('ERROR: '):]]
+		for line in lines[julia_error_start + 1:julia_error_start + 10]:
+			if line.strip() == 'Stacktrace:':
+				break
+			excerpt.append(line)
+	raise ReoptRunError(f'REopt failed. From {reopt_dirname}/stderr.txt:\n' + '\n'.join(f'    {line[:300]}' for line in excerpt))
 
 
 def _set_allinputdata_load_shape_parameters(data, mg_name, reopt_dirname, logger):
@@ -352,23 +465,6 @@ def _set_allinputdata_load_shape_parameters(data, mg_name, reopt_dirname, logger
 	assert isinstance(reopt_dirname, str)
 	assert isinstance(logger, logging.Logger)
 	load_df = pd.read_csv('loads.csv')
-	# Normalize columns (case-insensitive matching)
-	load_columns_lower = [str(c).lower() for c in load_df.columns]
-	# Validate that the loads required by this microgrid exist in the CSV.
-	expected_loads = [str(x).lower() for x in data['MICROGRIDS'][mg_name].get('loads', []) if x]
-	missing = [l for l in expected_loads if l not in load_columns_lower]
-	if missing:
-		# Map back to original-case expected names for more descriptive message if possible.
-		original_expected = data['MICROGRIDS'][mg_name].get('loads', [])
-		missing_original_case = [orig for orig in original_expected if str(orig).lower() in missing]
-		msg = (f'Loads CSV is missing required columns for microgrid "{mg_name}". '
-		 f'Missing load columns: {missing_original_case}. '
-		 'The loads.csv header must contain load names that match the circuit (case-insensitive). '
-		 'Please upload a loads.csv that corresponds to the selected circuit.')
-		# Log and raise an explicit error so test/backend callers see a clear exception
-		print(msg)
-		logger.warning(msg)
-		raise ValueError(msg)
 	# - Remove any columns that contain hourly indicies instead of kW values
 	load_df = load_df.iloc[:, load_df.apply(is_not_timeseries_column).to_list()]
 	# - Write loadShape.csv
@@ -618,30 +714,8 @@ def _microgrid_design_output(reopt_dirname, logger):
 	assert isinstance(reopt_dirname, str)
 	all_html = ''
 	legend_spec = {'orientation':'h', 'xanchor':'left'}#, 'x':0, 'y':-0.2}
-	# If REopt directory is completely missing, create a placeholder and return.
-	if not os.path.isdir(reopt_dirname):
-		warning = f'REopt directory "{reopt_dirname}" is missing — REopt run likely failed. Created placeholder output.'
-		try:
-			os.makedirs(reopt_dirname, exist_ok=True)
-			with open(f'{reopt_dirname}/cleanMicrogridDesign.html', 'w') as outFile:
-				outFile.write(f"<html><body><h1>{warning}</h1><p>Check REopt logs for details.</p></body></html>")
-		except Exception as e:
-			# If making dir or writing file fails, log message
-			print(f'Unable to create placeholder for missing {reopt_dirname}: {e}')
-			logger.warning(f'Unable to create placeholder for missing {reopt_dirname}: {e}')
-		# Log and return early so pipeline continues
-		print(warning)
-		logger.warning(warning)
-		return
-	# Try to read allOutputData.json, if missing fall back to empty dict
-	try:
-		with open(f'{reopt_dirname}/allOutputData.json') as file:
-			allOutData = json.load(file)
-	except FileNotFoundError:
-		logger_msg = f'{reopt_dirname}/allOutputData.json not found. Continuing with limited output.'
-		print(logger_msg)
-		logger.warning(logger_msg)
-		allOutData = {}
+	with open(f'{reopt_dirname}/allOutputData.json') as file:
+		allOutData = json.load(file)
 	# Make timeseries charts
 	plotlyData = {
 		'Generation Serving Load':'powerGenerationData1',
@@ -659,11 +733,6 @@ def _microgrid_design_output(reopt_dirname, logger):
 	if 'resilienceProbData1' in allOutData:
 		plotlyData['Outage Survival Probability'] = 'resilienceProbData1'
 	for k, v in plotlyData.items():
-		# Skip charts when data isn't present.
-		if v not in allOutData:
-			print(f'Skipping chart "{k}" because "{v}" not present in {reopt_dirname}/allOutputData.json')
-			logger.warning(f'Skipping chart "{k}" because "{v}" not present in {reopt_dirname}/allOutputData.json')
-			continue
 		try:
 			chart_data = json.loads(allOutData[v])
 			fig = go.Figure(chart_data)
@@ -711,55 +780,35 @@ def _microgrid_design_output(reopt_dirname, logger):
 			print(f'Failed to generate chart {k} from {reopt_dirname}: {e}')
 			logger.warning(f'Failed to generate chart {k} from {reopt_dirname}: {e}')
 			continue
-	# Make generation overview chart, guarding file openings and missing keys.
-	try:
-		with open(f'{reopt_dirname}/allInputData.json') as f:
-			all_input_data = json.load(f)
-	except FileNotFoundError:
-		print(f'{reopt_dirname}/allInputData.json not found. Using defaults.')
-		logger.warning(f'{reopt_dirname}/allInputData.json not found. Using defaults.')
-		all_input_data = {}
-	try:
-		with open(f'{reopt_dirname}/results.json') as f:
-			results = json.load(f)
-	except FileNotFoundError:
-		print(f'{reopt_dirname}/results.json not found. Using defaults.')
-		logger.warning(f'{reopt_dirname}/results.json not found. Using defaults.')
-		results = {}
-	# Safe getter with defaults in the event of missing data.
-	def safe_float(d, k, default=0.0):
-		try:
-			return float(d.get(k, default)) if isinstance(d, dict) else float(default)
-		except Exception:
-			return float(default)
-	# Default load_series lists to avoid crash in statistics.*
-	load_series = results.get('ElectricLoad', {}).get('load_series_kw', [0])
-	critical_series = results.get('ElectricLoad', {}).get('critical_load_series_kw', [0])
-	# build DataFrame using safe accessors
+	# Make generation overview chart
+	with open(f'{reopt_dirname}/allInputData.json') as f:
+		all_input_data = json.load(f)
+	with open(f'{reopt_dirname}/results.json') as f:
+		results = json.load(f)
 	df = pd.DataFrame({
-		'Solar kW': [safe_float(all_input_data, 'solarExisting', 0), 0, safe_float(all_input_data, 'solarExisting', 0), 0, 0],
-		'Wind kW': [safe_float(all_input_data, 'windExisting', 0), 0, safe_float(all_input_data, 'windExisting', 0), 0, 0],
-		'Storage kW': [safe_float(all_input_data, 'batteryKwExisting', 0), 0, safe_float(all_input_data, 'batteryKwExisting', 0), 0, 0],
-		'Storage kWh': [safe_float(all_input_data, 'batteryKwhExisting', 0), 0, safe_float(all_input_data, 'batteryKwhExisting', 0), 0, 0],
-		'Fossil kW': [safe_float(all_input_data, 'genExisting', 0), 0, safe_float(all_input_data, 'genExisting', 0), 0, 0],
-		'Load kW': [0, 0, 0, round(statistics.mean(load_series)) if len(load_series) else 0, round(max(load_series)) if len(load_series) else 0],
-		'Critical Load kW': [0, 0, 0, round(statistics.mean(critical_series)) if len(critical_series) else 0, round(max(critical_series)) if len(critical_series) else 0]
+		'Solar kW': [all_input_data['solarExisting'], 0, all_input_data['solarExisting'], 0, 0],
+		'Wind kW': [all_input_data['windExisting'], 0, all_input_data['windExisting'], 0, 0],
+		'Storage kW': [all_input_data['batteryKwExisting'], 0, all_input_data['batteryKwExisting'], 0, 0],
+		'Storage kWh': [all_input_data['batteryKwhExisting'], 0, all_input_data['batteryKwhExisting'], 0, 0],
+		'Fossil kW': [all_input_data['genExisting'], 0, all_input_data['genExisting'], 0, 0],
+		'Load kW': [0, 0, 0, round(statistics.mean(results['ElectricLoad']['load_series_kw'])), round(max(results['ElectricLoad']['load_series_kw']))],
+		'Critical Load kW': [0, 0, 0, round(statistics.mean(results['ElectricLoad']['critical_load_series_kw'])), round(max(results['ElectricLoad']['critical_load_series_kw']))]
 	}, index=['Existing', 'New', 'Total', 'Average', 'Peak'], dtype=np.float64)
 	if 'sizePV1' in allOutData:
 		df.loc['Total', 'Solar kW'] = round(allOutData['sizePV1'])
-		df.loc['New', 'Solar kW'] = round(allOutData['sizePV1'] - float(all_input_data.get('solarExisting', 0)))
+		df.loc['New', 'Solar kW'] = round(allOutData['sizePV1'] - float(all_input_data['solarExisting']))
 	if 'sizeWind1' in allOutData:
 		df.loc['Total', 'Wind kW'] = round(allOutData['sizeWind1'])
-		df.loc['New', 'Wind kW'] = round(allOutData['sizeWind1'] - float(all_input_data.get('windExisting', 0)))
+		df.loc['New', 'Wind kW'] = round(allOutData['sizeWind1'] - float(all_input_data['windExisting']))
 	if 'powerBattery1' in allOutData:
 		df.loc['Total', 'Storage kW'] = round(allOutData['powerBattery1'])
-		df.loc['New', 'Storage kW'] = round(allOutData['powerBattery1'] - float(all_input_data.get('batteryKwExisting', 0)))
+		df.loc['New', 'Storage kW'] = round(allOutData['powerBattery1'] - float(all_input_data['batteryKwExisting']))
 	if 'capacityBattery1' in allOutData:
 		df.loc['Total', 'Storage kWh'] = round(allOutData['capacityBattery1'])
-		df.loc['New', 'Storage kWh'] = round(allOutData['capacityBattery1'] - float(all_input_data.get('batteryKwhExisting', 0)))
+		df.loc['New', 'Storage kWh'] = round(allOutData['capacityBattery1'] - float(all_input_data['batteryKwhExisting']))
 	if 'sizeDiesel1' in allOutData:
 		df.loc['Total', 'Fossil kW'] = round(allOutData['sizeDiesel1'])
-		df.loc['New', 'Fossil kW'] = round(allOutData['sizeDiesel1'] - float(all_input_data.get('genExisting', 0)))
+		df.loc['New', 'Fossil kW'] = round(allOutData['sizeDiesel1'] - float(all_input_data['genExisting']))
 	generation_fig = go.Figure(data=[
 		go.Bar(name='Existing Generation (kW)', x=df.columns.to_series(), y=df.loc['Existing']),
 		go.Bar(name='New Generation (kW)', x=df.columns.to_series(), y=df.loc['New']),
@@ -779,16 +828,16 @@ def _microgrid_design_output(reopt_dirname, logger):
 		generation_fig.add_annotation(x=4, y=(max_ * 1.2), text=f'Fossil Fuel Used in Outage (kGal Diesel Equiv.): {allOutData["fuelUsedDieselRounded1"] / 1000.0}', showarrow=False, xanchor="left")
 	generation_fig_html = generation_fig.to_html(default_height='600px')
 	all_html = generation_fig_html + all_html
-	# Make financial overview chart and guard missing keys
+	# Make financial overview chart
 	fin_data_bau = {
-		'Demand Cost ($)': allOutData.get("demandCostBAU1", 0),
-		'Energy Cost ($)': allOutData.get("energyCostBAU1", 0),
-		'Total Cost ($)': allOutData.get("totalCostBAU1", 0)
+		'Demand Cost ($)': allOutData["demandCostBAU1"],
+		'Energy Cost ($)': allOutData["energyCostBAU1"],
+		'Total Cost ($)': allOutData["totalCostBAU1"]
 	}
 	fin_data_microgrid = {
-		'Demand Cost ($)': allOutData.get("demandCost1", 0),
-		'Energy Cost ($)': allOutData.get("energyCost1", 0),
-		'Total Cost ($)': allOutData.get("totalCost1", 0)
+		'Demand Cost ($)': allOutData["demandCost1"],
+		'Energy Cost ($)': allOutData["energyCost1"],
+		'Total Cost ($)': allOutData["totalCost1"]
 	}
 	fin_fig = go.Figure(
 		data=[
@@ -814,12 +863,9 @@ def _microgrid_design_output(reopt_dirname, logger):
 	)
 	fin_fig_html = fin_fig.to_html(default_height='600px')
 	all_html = fin_fig_html + all_html
-	# Nice input display with guard against missing file possibility.
-	try:
-		with open(f'{reopt_dirname}/allInputData.json') as inFile:
-			allInputData = json.load(inFile)
-	except FileNotFoundError:
-		allInputData = {}
+	# Nice input display
+	with open(f'{reopt_dirname}/allInputData.json') as inFile:
+		allInputData = json.load(inFile)
 	allInputData['loadShape'] = 'From File'
 	allInputData['criticalLoadShape'] = 'From File'
 	# Templating.

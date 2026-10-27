@@ -9,8 +9,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, Request, request, redirect, render_template, jsonify, url_for, send_from_directory, Blueprint
 from omf import geo
 from omf.solvers.opendss import dssConvert
-from microgridup_gen_mgs import nx_group_branch, nx_group_lukes, nx_bottom_up_branch, nx_critical_load_branch, get_all_trees, form_microgrids, form_mg_groups, topological_sort, SwitchNotFoundError, CycleDetectedError, InsufficientBranchPointsError, _validate_mg_groups_feeders_and_substations
+from microgridup_gen_mgs import nx_group_branch, nx_group_lukes, nx_bottom_up_branch, nx_critical_load_branch, get_all_trees, form_microgrids, form_mg_groups, topological_sort, SwitchNotFoundError, CycleDetectedError, InsufficientBranchPointsError
 # from microgridup_gen_mgs import new_nx_group_branch # Add to above imports when transitioning to new_nx_group_branch().
+import microgridup_validation
 import microgridup
 
 app = Flask(__name__)
@@ -517,6 +518,11 @@ def previewPartitions():
 	except Exception:
 		return jsonify('Invalid partitioning method')
 	MICROGRIDS = form_microgrids(G, MG_GROUPS, omd)
+	microgridup_validation.raise_for_invalid_microgrids(MICROGRIDS, omd, METHOD)
+	# - The warnings are shown under the map
+	warnings = (microgridup_validation.get_outside_load_warnings(MICROGRIDS, omd)
+		+ microgridup_validation.get_no_critical_load_warnings(MICROGRIDS, CRITICAL_LOADS)
+		+ microgridup_validation.get_microgrid_count_warnings(MICROGRIDS, METHOD, MGQUANT))
 	# Embed the map. 
 	microgrids_as_mapping_proxy_type = microgridup.get_immutable_dict(MICROGRIDS)
 	critical_loads_as_tuple = tuple(CRITICAL_LOADS)
@@ -529,7 +535,7 @@ def previewPartitions():
 	geo.map_omd(omd_path, output_dir, open_browser=False, showAddNewObjectsButton=False, showAttachmentsButton=False, showAddGeojsonButton=False)
 	map_html_file = os.path.join(output_dir, 'geoJson_offline.html')
 	map_url = url_for('static', filename=f'preview_partition_maps/{MODEL_DIR}/{os.path.basename(map_html_file)}')
-	return jsonify({'map_url': map_url, 'MICROGRIDS': MICROGRIDS})
+	return jsonify({'map_url': map_url, 'MICROGRIDS': MICROGRIDS, 'warnings': warnings})
 
 @app.route('/has_cycles', methods=['GET','POST'])
 def has_cycles():
@@ -588,44 +594,6 @@ def run():
 	data['FAULTED_LINES'] = data['FAULTED_LINES'].split(',')
 	# - Create microgrids here and not in microgridup.main because it's easier to format the testing data
 	data['MICROGRIDS'] = _get_microgrids(data['CRITICAL_LOADS'], data['MG_DEF_METHOD'], data['mgQuantity'], data['BASE_DSS'], data['PARTITION_PARAMS'], is_wizard_circuit='jsCircuitModel' in data)
-	# Validate that intended microgrids (from PARTITION_PARAMS.mg_name) actually exist in data['MICROGRIDS']
-	try:
-		partition_params = json.loads(request.form.get('PARTITION_PARAMS', '{}'))
-	except Exception:
-		partition_params = {}
-	mg_name_map = partition_params.get('mg_name', {})  # Map ids -> names: {'mg0': 'name0', 'mg1': 'name1'}
-	# - Only run the check when the front end supplied microgrid names. A re-run from the edit page without choosing a partition method sends the
-	#   saved MICROGRIDS dict as PARTITION_PARAMS, which has no "mg_name" key, so every key would be reported as unexpected even though the run is fine
-	if mg_name_map:
-		# Build reverse map name -> id for convenience
-		name_to_id = {v: k for k, v in mg_name_map.items() if v}
-		# Keys coming from the microgrids returned by form_microgrids().
-		actual_mg_keys = set(data['MICROGRIDS'].keys())
-		# Convert actual_mg_keys to a set of mg ids (handling cases where the keys are either ids or names).
-		actual_mg_ids = set()
-		for key in actual_mg_keys:
-			if key in mg_name_map: # Key is an id
-				actual_mg_ids.add(key)
-			elif key in name_to_id: # Key is a name
-				actual_mg_ids.add(name_to_id[key])
-			else:
-				# Unknown key format; log for debugging but don't crash here
-				print(f'Unexpected MICROGRIDS key format: "{key}". Could not map to mg id using PARTITION_PARAMS.mg_name.')
-				# Do not add it to actual_mg_ids because it cannot be mapped to the intended id space
-		# Intended mg ids (from the user's partition parameters)
-		intended_mg_ids = set(mg_name_map.keys())
-		# Determine which intended ids are missing (present in intended but not in actual)
-		missing_intended_mgs = sorted(list(intended_mg_ids - actual_mg_ids))
-		if missing_intended_mgs:
-			# Map to nice names if available, otherwise fall back to id string
-			missing_names = [mg_name_map.get(mgid, mgid) for mgid in missing_intended_mgs]
-			msg = (
-				f'The following microgrids were defined but no loads were assigned: {missing_names}. '
-				'Either assign at least one load to each microgrid or remove them from the partitioner and try again.'
-			)
-			print(msg)
-			raise ValueError(msg)
-	
 	if len(list(data['MICROGRIDS'].keys())) == 0:
 		# - I'm assuming that if this is true, then the front-end allowed bad data to be sent, so we should inform the user
 		raise ValueError('No microgrids were defined. The model run was aborted.')
@@ -633,6 +601,8 @@ def run():
 	data['mgParameterOverrides'] = json.loads(data['mgParameterOverrides'])
 	for mg_name, mg_parameter_overrides in data['mgParameterOverrides'].items():
 		data['MICROGRIDS'][mg_name]['parameter_overrides'] = mg_parameter_overrides
+	# - Check the rest of the inputs now, so a problem shows as an alert on the form instead of a crashed project
+	microgridup_validation.raise_for_invalid_run_inputs(data)
 	# - Remove form keys that are not needed past this point
 	del data['MG_DEF_METHOD']
 	del data['mgQuantity']
@@ -719,35 +689,6 @@ def _get_reopt_inputs(data):
 	:rtype: dict
 	'''
 	assert isinstance(data, dict)
-
-	def _get_user_urdb_response(urdb_response_text):
-		'''
-		Return the unchanged str instead of a dict because the only place that needs a dict is in microgridDesign.py
-
-		:param urdb_response_text: the user's pasted JSON
-		:type urdb_response_text: str
-		:return: the user's pasted JSON or an empty string
-		:rtype: str
-		:raises ValueError: if the text is not a JSON object with the keys that REopt requires. The ValueError handler at the top of this file turns it into
-			the JSON 400 response that the submit alert shows
-		'''
-		# - An empty textarea means "no custom rate". It is the default (the blended energy and demand rates are used), so it must not be parsed as JSON
-		if urdb_response_text.strip() == '':
-			return ''
-		try:
-			urdb_response = json.loads(urdb_response_text)
-		except json.JSONDecodeError as e:
-			raise ValueError(f'The "Custom URDB Rate (JSON format)" is not valid JSON: {e}')
-		# - Only a JSON object can be a rate. Without this check, a pasted list or number would crash the key check below
-		if not isinstance(urdb_response, dict):
-			raise ValueError('The "Custom URDB Rate (JSON format)" must be a JSON object (the rate itself, not a list)')
-		# urdb.jl in REopt requires these three keys
-		required_keys = ('energyratestructure', 'energyweekdayschedule', 'energyweekendschedule')
-		missing_keys = ', '.join([k for k in required_keys if k not in urdb_response])
-		if missing_keys != '':
-			raise ValueError(f'The "Custom URDB Rate (JSON format)" lacks required key(s): {missing_keys}')
-		return urdb_response_text
-
 	reopt_inputs = {
 		'energyCost':                   float(data['energyCost']),
 		'wholesaleCost':                float(data['wholesaleCost']),
@@ -756,7 +697,7 @@ def _get_reopt_inputs(data):
 		'solarCanExport':               data['solarCanExport'] == 'true',
 		# (removed) 'urdbLabelSwitch':              data['urdbLabelSwitch'] == 'true',
 		# (removed) 'urdbLabel':                    data['urdbLabel'],
-		'urdbResponse':                 _get_user_urdb_response(data['urdbResponse']),
+		'urdbResponse':                 data['urdbResponse'].strip(),
 		'year':                         int(data['year']),
 		'analysisYears':                int(data['analysisYears']),
 		'outageDuration':               int(data['outageDuration']),
@@ -840,18 +781,21 @@ def _get_microgrids(critical_loads, partition_method, quantity, dss_path, partit
 	elif partition_method == 'criticalLoads':
 		mg_groups = form_mg_groups(G, critical_loads, 'criticalLoads', algo_params={'num_mgs':quantity})
 		microgrids = form_microgrids(G, mg_groups, omd)
-	elif partition_method == 'loadGrouping':
+	elif partition_method in ('loadGrouping', 'manual'):
+		# - The user chose these groups, so check them before the microgrids are formed. Only a wizard circuit puts each microgrid on one feeder
 		algo_params = json.loads(partition_params_json)
-		mg_groups = form_mg_groups(G, critical_loads, 'loadGrouping', algo_params)
-		_validate_mg_groups_feeders_and_substations(mg_groups, G, omd, partition_params_json=partition_params_json, strict_feeder_check=is_wizard_circuit)
-		microgrids = form_microgrids(G, mg_groups, omd, switch_dict=algo_params.get('switch', None), gen_bus_dict=algo_params.get('gen_bus', None), mg_name_dict=algo_params.get('mg_name', None))
-	elif partition_method == 'manual':
-		algo_params = json.loads(partition_params_json)
-		mg_groups = form_mg_groups(G, critical_loads, 'manual', algo_params)
-		_validate_mg_groups_feeders_and_substations(mg_groups, G, omd, partition_params_json=partition_params_json, strict_feeder_check=is_wizard_circuit)
+		mg_groups = form_mg_groups(G, critical_loads, partition_method, algo_params)
+		microgridup_validation.raise_for_empty_mg_groups(mg_groups, partition_params_json)
+		microgridup_validation.raise_for_mg_group_nodes_not_in_circuit(mg_groups, G, partition_params_json)
+		microgridup_validation.raise_for_mg_groups_not_in_one_tree(mg_groups, G, partition_params_json)
+		if is_wizard_circuit:
+			microgridup_validation.raise_for_mg_groups_not_on_one_feeder(mg_groups, omd, partition_params_json)
 		microgrids = form_microgrids(G, mg_groups, omd, switch_dict=algo_params.get('switch', None), gen_bus_dict=algo_params.get('gen_bus', None), mg_name_dict=algo_params.get('mg_name', None))
 	elif partition_method == '':
 		microgrids = json.loads(partition_params_json)
+	microgridup_validation.raise_for_invalid_microgrids(microgrids, omd, partition_method)
+	# Validate that intended microgrids (from PARTITION_PARAMS.mg_name) actually exist in data['MICROGRIDS']
+	microgridup_validation.raise_for_missing_intended_microgrids(microgrids, partition_params_json)
 	return microgrids
 
 def allowed_file(filename):

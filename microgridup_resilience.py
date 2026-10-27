@@ -105,36 +105,28 @@ def main(in_csv, data, in_dss, out_html):
 	saidi_groupings_html = fig.to_html(default_height='300px')
 	# - Generate resilience statistics for SAIDI, SAIFI, CAIDI, ASAI, and MAIFI. Compare stats by year and by no microgrids vs. microgrids
 	no_microgrids_df = pd.read_csv(in_csv)
+	microgrids_df = pd.concat([noncritical_without_mg, noncritical_mg, critical_mg, critical_without_mg])
+	# - Compare every year that has an outage in the file. The microgrid adjustment moves an outage's start later, which can move it into the next
+	#   year
+	years = sorted(set(pd.to_datetime(no_microgrids_df['Start']).dt.year) | set(pd.to_datetime(microgrids_df['Start']).dt.year))
 	# - Interuption of less than '200' seconds considered momentary.
 	no_microgrids_stats = [
 		[round(x, 3) for x in stats(no_microgrids_df[(pd.to_datetime(no_microgrids_df['Start']) >= pd.Timestamp(str(year))) & (pd.to_datetime(no_microgrids_df['Start']) < pd.Timestamp(str(year + 1)))].reset_index(), 200, load_count)]
-		for year in range(2015, 2022)]
-	microgrids_df = pd.concat([noncritical_without_mg, noncritical_mg, critical_mg, critical_without_mg])
+		for year in years]
 	microgrids_stats = [
 		[round(x, 3) for x in stats(microgrids_df[(pd.to_datetime(microgrids_df['Start']) >= pd.Timestamp(str(year))) & (pd.to_datetime(microgrids_df['Start']) < pd.Timestamp(str(year + 1)))].reset_index(), '200', str(load_count))]
-		for year in range(2015, 2022)]
+		for year in years]
 	df = pd.DataFrame({
-		'SAIDI': [f(i) for i in range(7) for f in (lambda idx: no_microgrids_stats[idx][0], lambda idx: microgrids_stats[idx][0])],
-		'SAIFI': [f(i) for i in range(7) for f in (lambda idx: no_microgrids_stats[idx][1], lambda idx: microgrids_stats[idx][1])],
-		'CAIDI': [f(i) for i in range(7) for f in (lambda idx: no_microgrids_stats[idx][2], lambda idx: microgrids_stats[idx][2])],
-		'ASAI':  [f(i) for i in range(7) for f in (lambda idx: no_microgrids_stats[idx][3], lambda idx: microgrids_stats[idx][3])],
-		'MAIFI': [f(i) for i in range(7) for f in (lambda idx: no_microgrids_stats[idx][4], lambda idx: microgrids_stats[idx][4])]
-	}, index=['stats_raw_2015', 'stats_new_2015', 'stats_raw_2016', 'stats_new_2016', 'stats_raw_2017', 'stats_new_2017', 'stats_raw_2018', 'stats_new_2018', 'stats_raw_2019', 'stats_new_2019', 'stats_raw_2020', 'stats_new_2020', 'stats_raw_2021', 'stats_new_2021'])
+		'SAIDI': [f(i) for i in range(len(years)) for f in (lambda idx: no_microgrids_stats[idx][0], lambda idx: microgrids_stats[idx][0])],
+		'SAIFI': [f(i) for i in range(len(years)) for f in (lambda idx: no_microgrids_stats[idx][1], lambda idx: microgrids_stats[idx][1])],
+		'CAIDI': [f(i) for i in range(len(years)) for f in (lambda idx: no_microgrids_stats[idx][2], lambda idx: microgrids_stats[idx][2])],
+		'ASAI':  [f(i) for i in range(len(years)) for f in (lambda idx: no_microgrids_stats[idx][3], lambda idx: microgrids_stats[idx][3])],
+		'MAIFI': [f(i) for i in range(len(years)) for f in (lambda idx: no_microgrids_stats[idx][4], lambda idx: microgrids_stats[idx][4])]
+	}, index=[f'stats_{kind}_{year}' for year in years for kind in ('raw', 'new')])
 	fig = go.Figure(data=[
-		go.Bar(name='Without Microgrid (2015)', x=df.columns.to_series(), y=df.loc['stats_raw_2015'], marker_color='#fa9563', hoverlabel_namelength=-1),
-		go.Bar(name='Microgrid (2015)', x=df.columns.to_series(), y=df.loc['stats_new_2015'], marker_color='#48cb11', hoverlabel_namelength=-1),
-		go.Bar(name='Without Microgrid (2016)', x=df.columns.to_series(), y=df.loc['stats_raw_2016'], marker_color='#fa9563', hoverlabel_namelength=-1),
-		go.Bar(name='Microgrid (2016)', x=df.columns.to_series(), y=df.loc['stats_new_2016'], marker_color='#48cb11', hoverlabel_namelength=-1),
-		go.Bar(name='Without Microgrid (2017)', x=df.columns.to_series(), y=df.loc['stats_raw_2017'], marker_color='#fa9563', hoverlabel_namelength=-1),
-		go.Bar(name='Microgrid (2017)', x=df.columns.to_series(), y=df.loc['stats_new_2017'], marker_color='#48cb11', hoverlabel_namelength=-1),
-		go.Bar(name='Without Microgrid (2018)', x=df.columns.to_series(), y=df.loc['stats_raw_2018'], marker_color='#fa9563', hoverlabel_namelength=-1),
-		go.Bar(name='Microgrid (2018)', x=df.columns.to_series(), y=df.loc['stats_new_2018'], marker_color='#48cb11', hoverlabel_namelength=-1),
-		go.Bar(name='Without Microgrid (2019)', x=df.columns.to_series(), y=df.loc['stats_raw_2019'], marker_color='#fa9563', hoverlabel_namelength=-1),
-		go.Bar(name='Microgrid (2019)', x=df.columns.to_series(), y=df.loc['stats_new_2019'], marker_color='#48cb11', hoverlabel_namelength=-1),
-		go.Bar(name='Without Microgrid (2020)', x=df.columns.to_series(), y=df.loc['stats_raw_2020'], marker_color='#fa9563', hoverlabel_namelength=-1),
-		go.Bar(name='Microgrid (2020)', x=df.columns.to_series(), y=df.loc['stats_new_2020'], marker_color='#48cb11', hoverlabel_namelength=-1),
-		go.Bar(name='Without Microgrid (2021)', x=df.columns.to_series(), y=df.loc['stats_raw_2021'], marker_color='#fa9563', hoverlabel_namelength=-1),
-		go.Bar(name='Microgrid (2021)', x=df.columns.to_series(), y=df.loc['stats_new_2021'], marker_color='#48cb11', hoverlabel_namelength=-1)])
+		go.Bar(name=f'{name} ({year})', x=df.columns.to_series(), y=df.loc[f'stats_{kind}_{year}'], marker_color=color, hoverlabel_namelength=-1)
+		for year in years
+		for kind, name, color in (('raw', 'Without Microgrid', '#fa9563'), ('new', 'Microgrid', '#48cb11'))])
 	fig.update_layout(
 		title = 'Original and Adjusted Resilience Metrics by Year',
 		legend = legend_spec,
