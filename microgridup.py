@@ -177,15 +177,23 @@ def main(data, invalidate_cache=True, open_results=False):
 			allInputData = json.load(file)
 		outage_start = int(allInputData['outage_start_hour'])
 		outage_length = int(allInputData['outageDuration'])
-		# - Perform a control sim on circuit_plug_mgAll.dss
-		try:
-			microgridup_control.play(immutable_data, outage_start, outage_length, logger)
-		except ValueError as e:
-			error_message = str(e)
-			print(error_message)
-			logger.warning(error_message)
+		# - Perform a control sim on circuit_plug_mgAll.dss. An empty list of outage locations means that the user chose "None (no outage simulation)",
+		#   so the sim is skipped and the Control tab says so
+		if len(immutable_data['FAULTED_LINES']) == 0:
+			skipped_message = 'The control simulation was skipped because no outage location was chosen.'
+			print(skipped_message)
+			logger.warning(skipped_message)
 			with open('output_control.html', 'w') as file:
-				file.write(f"<html><body><h1>Error</h1><p>{error_message}</p></body></html>")
+				file.write(f"<html><body><h1>Control simulation skipped</h1><p>{skipped_message}</p></body></html>")
+		else:
+			try:
+				microgridup_control.play(immutable_data, outage_start, outage_length, logger)
+			except ValueError as e:
+				error_message = str(e)
+				print(error_message)
+				logger.warning(error_message)
+				with open('output_control.html', 'w') as file:
+					file.write(f"<html><body><h1>Error</h1><p>{error_message}</p></body></html>")
 		# Resilience simulation with outages. Optional. Skipped if no OUTAGE_CSV
 		if immutable_data['OUTAGE_CSV']:
 			microgridup_resilience.main('outages.csv', immutable_data, 'circuit_plus_mgAll.dss', 'output_resilience.html')
