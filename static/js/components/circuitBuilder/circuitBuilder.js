@@ -342,75 +342,119 @@ class CsvLoadParser {
 class OutageLocationInputView {
 
     modal;
-    #controller;
     #input;
+    #inputIsShown;
+    #select;
 
-    constructor(circuitController) {
-        if (!(circuitController instanceof CircuitController)) {
-            throw TypeError('The "circuitController" argument must be instanceof CircuitController.');
-        }
-        this.modal = null;
-        this.#controller = circuitController;
+    // - The values of the options that aren't lines. Neither can be the name of a line, because an OpenDSS name can't be empty or hold a space
+    static #none = '';
+    static #otherLines = 'other lines';
+
+    constructor() {
+        this.modal = new Modal();
         this.renderContent();
     }
 
+    /**
+     * - Build the label, the dropdown and the text input. The dropdown is not posted with the form. The text input is posted as FAULTED_LINES and
+     *   always holds the chosen lines as comma-separated text, which is an empty string when no outage is simulated
+     * @returns {undefined}
+     */
     renderContent() {
-        const modal = new Modal();
         const label = document.createElement('label');
         label.classList.add('tooltip');
-        label.htmlFor = 'FAULTED_LINES';
+        label.htmlFor = 'outageLocationSelect';
         label.textContent = 'Outage Location(s) ';
         const span = document.createElement('span');
         span.classList.add('classic');
-        span.textContent = 'Name of the line in the circuit where a typical outage would take place. Use commas to separate multiple lines.';
+        span.textContent = 'Line in the circuit where the outage is simulated. Once a circuit is submitted, the list holds the first line on each path out of the substation. Choose "Other lines..." to enter any lines by name. "None (no outage simulation)" skips the control simulation.';
         label.append(span);
-        modal.divElement.append(label);
+        const select = document.createElement('select');
+        this.#select = select;
+        select.id = 'outageLocationSelect';
+        select.addEventListener('change', () => {
+            // - A listed line is posted by its name. The other options start the text input empty, and only "Other lines..." shows it for typing
+            const otherLinesIsSelected = select.value === OutageLocationInputView.#otherLines;
+            this.#input.value = otherLinesIsSelected ? '' : select.value;
+            this.#showInput(otherLinesIsSelected, true);
+        });
         const input = document.createElement('input');
         this.#input = input;
         input.id = 'FAULTED_LINES';
         input.name = 'FAULTED_LINES';
-        input.pattern = '[\\w\\-]+(?:,[\\w\\-]+)*'
-        input.required = true;
-        this.updateInput();
-        modal.divElement.append(input);
-        if (this.modal === null) {
-            this.modal = modal;
-        }
-        if (document.body.contains(this.modal.divElement)) {
-            this.modal.divElement.replaceWith(modal.divElement);
-            this.modal = modal;
-        }
+        input.placeholder = 'line_1,line_2, ...';
+        input.style.display = 'none';
+        this.#inputIsShown = false;
+        // - The space keeps the text input apart from the dropdown, the same way the label's last character keeps the dropdown apart from the label
+        this.modal.divElement.append(label, select, ' ', input);
+        this.clearOptions();
     }
 
-    handleNewElement(element) {
-        if (element.getProperty('type') === 'feeder') {
-            this.#controller.model.addObserver(this, element.fullName);
-            this.renderContent();
-        }
+    /**
+     * - Show that no circuit is submitted, so there is nothing to choose from. The dropdown holds a single entry that asks for a circuit, and the
+     *   text input is hidden and empty
+     * @returns {undefined}
+     */
+    clearOptions() {
+        this.#select.replaceChildren(new Option('Please submit circuit', OutageLocationInputView.#none));
+        this.#input.value = '';
+        this.#showInput(false, false);
     }
 
-    handleRemovedElement(element) {
-        if (element.getProperty('type') === 'feeder') {
-            this.#controller.model.removeObserver(this, element.fullName);
-            this.renderContent();
+    /**
+     * - List the lines of the circuit that was just submitted, between "None (no outage simulation)" and "Other lines...", and select the first
+     *   of these. A choice made for an earlier circuit is discarded
+     * @param {Array} lineNames - the names of the lines to list
+     * @returns {undefined}
+     */
+    setOptions(lineNames) {
+        if (!Array.isArray(lineNames)) {
+            throw TypeError('The "lineNames" argument must be an array.');
         }
+        this.#select.replaceChildren(
+            new Option('None (no outage simulation)', OutageLocationInputView.#none),
+            ...lineNames.map(lineName => new Option(lineName, lineName)),
+            new Option('Other lines...', OutageLocationInputView.#otherLines));
+        this.setValue('');
     }
 
-    handleChangedProperty(element, property, oldPropertyVal, namespace) {
-        if (element.getProperty('type') === 'feeder' && property === 'name' && namespace === 'props') {
-            this.renderContent();
-        }
-    }
-
+    /**
+     * - Show a choice without animation, e.g. a saved project's. An empty string selects "None (no outage simulation)", the name of a listed line
+     *   selects that line, and any other text selects "Other lines..." and goes into the text input. The options must have been set first
+     * @param {string} value - the chosen lines as comma-separated text
+     * @returns {undefined}
+     */
     setValue(value) {
         if (typeof value !== 'string') {
             throw TypeError('The "value" argument must be typeof "string".');
         }
+        const optionValues = [...this.#select.options].map(option => option.value);
+        if (!optionValues.includes(OutageLocationInputView.#otherLines)) {
+            throw Error('A choice can only be shown after setOptions() has listed a circuit\'s lines.');
+        }
+        this.#select.value = optionValues.includes(value) ? value : OutageLocationInputView.#otherLines;
         this.#input.value = value;
+        this.#showInput(this.#select.value === OutageLocationInputView.#otherLines, false);
     }
 
-    updateInput() {
-        this.#input.value = this.#controller.model.getElements(element => element.getProperty('type') === 'feeder').map(feeder => feeder.getProperty('name')).join(',');
+    /**
+     * - Show or hide the text input with the page's horizontal slides, slideRight() and slideLeft() in template_new.html, which also move the
+     *   Custom URDB Rate text area. Without animation the slide lasts 0 ms. Both cases go through the slides so that a new change cancels a slide
+     *   that is still running
+     * @param {boolean} show - whether the text input should be visible
+     * @param {boolean} animate - whether the change takes the 500 ms of the page's other slides
+     * @returns {undefined}
+     */
+    #showInput(show, animate) {
+        if (show === this.#inputIsShown) {
+            return;
+        }
+        this.#inputIsShown = show;
+        if (show) {
+            window.slideRight(this.#input, animate ? 500 : 0);
+        } else {
+            window.slideLeft(this.#input, animate ? 500 : 0);
+        }
     }
 }
 
@@ -1089,13 +1133,18 @@ class CircuitUserControlsView {
                 });
                 const responseJson = await response.json();
                 if (!response.ok) {
-                    throw new Error(responseJson.message);
+                    // - A ValueError raised on the server arrives as "message". The taken project name arrives as "error"
+                    throw new Error(responseJson.message ?? responseJson.error);
                 }
                 // Enable partition selector.
 				document.getElementById('previewPartitionsButton').disabled = false;
 				document.getElementById('partitionMethod').disabled = false;
 				window.circuitIsSpecified = true; // - Global variable!
 				const loads = responseJson.loads;
+				// - The Go button of the Load Grouping and Manual partition methods builds each microgrid's list of loads from this
+				window.loadsList = loads;
+				// - List the submitted circuit's suggested outage locations, which are its feeders
+				window.outageLocationInputView.setOptions(responseJson.outage_locations);
                 // Clear critLoads.
 				const critLoadsContainer = document.getElementById('critLoads');
 				critLoadsContainer.innerHTML = '';
@@ -1111,6 +1160,8 @@ class CircuitUserControlsView {
 				const criticalLoadsSelect = document.createElement('form');
 				criticalLoadsSelect.id = 'criticalLoadsSelect';
 				criticalLoadsSelect.classList.add('chunk');
+				// - The same Select All button that the page adds above the list after an upload. template_new.html defines it and puts it on window
+				critLoadsContainer.appendChild(window.createSelectAllCriticalLoadsButton(criticalLoadsSelect));
 				critLoadsContainer.appendChild(criticalLoadsSelect);
                 // Create a div to house load assignment dropdown menus.
 				const loadAssignmentContainer = document.createElement('div');
@@ -1155,7 +1206,7 @@ class CircuitUserControlsView {
                 that.modal.setBanner('', ['hidden']);
                 document.getElementById('partitionMethod').dispatchEvent(new Event('change')); // Manually trigger dropdown select menu change to potentially refresh partition method descriptions (manual partitioning description differs dependent on wizard vs upload).
             } catch (error) {
-                that.modal.setBanner(data.responseJSON.error, ['caution']);
+                that.modal.setBanner(error.message, ['caution']);
                 setTimeout(() => {
                     that.modal.setBanner('', ['hidden']);
                 }, 5000)

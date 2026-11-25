@@ -469,6 +469,10 @@ From the Home screen you can:
     corresponding column in the Load Data file and the names must match
     exactly.
 
+    **Outage Location(s)** shows **Please submit circuit** for now. It
+    has nothing to choose from until a circuit is uploaded or submitted
+    in [Step 2](#step-2-specify-existing-circuit).
+
 > **Tip**: Hover over a field label for more information about that
 > field. For detailed information, see Table 1 in the [Microgrid
 > Specifications](#microgrid-specifications) section of Appendix A.
@@ -522,6 +526,10 @@ match exactly.
 
 3.  Click **Upload**.
 
+    The circuit must contain at least one load. If it has none,
+    MicrogridUP shows an error and keeps the circuit that was uploaded
+    before.
+
 4.  After successfully uploading the circuit file, select all critical
     loads from the list below the Circuit Definition dialog. **Critical
     loads** are loads which must be powered during outages or other
@@ -552,12 +560,47 @@ match exactly.
 4.  When you have finished configuring the circuit, click **Submit
     circuit**.
 
+    The circuit must contain at least one load. If it has none,
+    MicrogridUP shows an error and does not submit the circuit.
+
 5.  After successfully submitting the circuit, select all critical loads
     from the list below the Circuit Builder dialog. **Critical loads**
     are loads which must be powered during outages or other resiliency
     events.
 
 <img src="./media/image8.png"/>
+
+**To choose an outage location**
+
+Once the circuit is uploaded or submitted, the **Outage Location(s)**
+dropdown in the Resilience section of Step 1 lists the first line on
+each path out of the substation. For a circuit built manually, these
+are its feeders.
+
+1.  Choose a line to simulate an outage on that line. The Control tab
+    of the results shows how the microgrids perform during the outage.
+
+2.  To simulate an outage on other lines, or on several lines at once,
+    choose **Other lines...** and type the line names, separated by
+    commas.
+
+3.  To skip the control simulation, leave the dropdown on **None (no
+    outage simulation)**.
+
+The dropdown shows **Please submit circuit** whenever no circuit is
+submitted. That is the case before the first upload or **Submit
+circuit**, and again after each of the following changes, which also
+empty the critical loads list.
+
+- Switching between **Upload circuit from file** and **Build circuit
+  manually**.
+
+- Choosing another circuit file or clicking **Remove File**.
+
+- Changing anything in the Circuit Builder, including its **Latitude**
+  and **Longitude**.
+
+Upload the file or submit the circuit again to continue.
 
 #### Step 3: Partition circuit into microgrids
 
@@ -576,6 +619,17 @@ circuit into microgrids and choose one that best fits your environment.
 
 2.  Click **Preview partitions** to see the number and locations of the
     microgrids that will be modeled using the specified method.
+
+    The **Branch**, **Bottom-Up** and **Critical Loads** methods need a
+    preview before **Run Project**, and the project runs with exactly
+    the microgrids on the preview map. MicrogridUP removes the preview
+    when you change the critical loads, the method, the number of
+    microgrids or the circuit. **Run Project** then asks you to preview
+    the partitions again.
+
+    A preview needs at least one critical load, whatever the method.
+    Without one, MicrogridUP shows an error instead of a map. It does
+    the same if a method makes no microgrids.
 
 #### Step 4: Select technologies to be used in microgrids
 
@@ -623,6 +677,10 @@ locations) that can be done in this input.
     **each** microgrid. If you don’t specify a value here, the microgrid
     will continue to use the default value for that parameter specified
     in Step 4.
+
+    The overrides belong to the microgrids of the current preview. When
+    MicrogridUP removes the preview, as described in Step 3, it removes
+    their overrides too.
 
 4.  After entering values for all desired parameters, click **Run
     project** to start processing.
@@ -715,7 +773,9 @@ includes graphics depicting:
 The Control tab provides detailed results of how the microgrid(s) will
 perform during the user-specified critical outage, e.g., a 7-day loss of
 power from the bulk power system during the time of highest load and
-lowest renewable output. The Control tab includes graphics depicting:
+lowest renewable output. If **Outage Location(s)** was left on **None
+(no outage simulation)**, the control simulation is skipped and the
+Control tab says so instead. The Control tab includes graphics depicting:
 
 - Generator Output—maximum output required of generators.
 
@@ -1106,9 +1166,20 @@ REopt Web Tool User Manual.</u></a></p></td>
 </tr>
 <tr class="even">
 <td><strong>Outage Location(s)</strong></td>
-<td>670671</td>
-<td>Node number in distribution map where typical outage would take
-place.</td>
+<td>None (no outage simulation)</td>
+<td><p>The line or lines in the circuit where the outage of the control
+simulation takes place. The dropdown shows <strong>Please submit
+circuit</strong> until a circuit is uploaded or submitted in Step 2. It
+then lists the first line on each path out of the substation, because
+an outage on such a line cuts everything behind it off from the grid.
+For a circuit built manually, these lines are its feeders.</p>
+<p>Choose <strong>Other lines...</strong> to type the names of any lines
+in the circuit, separated by commas, for example
+<code>line_1,line_2</code>. Every name must be the name of a line in the
+circuit.</p>
+<p>Choose <strong>None (no outage simulation)</strong> to skip the
+control simulation. The microgrids are still sized to sustain the
+critical load for the Outage Duration.</p></td>
 </tr>
 <tr class="odd">
 <td><strong>Outage Duration (hours)</strong></td>

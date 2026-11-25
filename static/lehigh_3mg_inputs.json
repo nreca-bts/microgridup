@@ -101,9 +101,7 @@
             }
         }
     },
-    "FAULTED_LINES": [
-        "670671"
-    ],
+    "FAULTED_LINES": [],
     "OUTAGE_CSV": null,
     "CRITICAL_LOADS": [
         "634a_data_center",

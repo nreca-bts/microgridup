@@ -287,6 +287,8 @@ def wizard_to_dss(model_dir=None, lat=None, lon=None, elements=None, test_run=Fa
 		if os.path.isdir(f'{microgridup.PROJ_DIR}/{model_dir}'):
 			print('Invalid Model Name.')
 			return jsonify(error=f'A project named "{model_dir}" already exists. Please choose a different project name.'), 400 # Name was already taken.
+	# - Check the circuit before its file is written, so that a rejected circuit doesn't replace the project's current circuit file
+	microgridup_validation.raise_for_circuit_without_loads([ob['name'] for ob in elements if ob['type'] == 'load'])
 	# Convert to DSS and return loads.
 	dssString = f'clear \nset defaultbasefrequency=60 \nnew object=circuit.{model_dir} \n'
 	busList = []
@@ -342,7 +344,7 @@ def wizard_to_dss(model_dir=None, lat=None, lon=None, elements=None, test_run=Fa
 	loads = getLoads(dssFilePath)
 	if not test_run:
 		t = dssConvert.dssToTree(dssFilePath)
-		return jsonify(loads=loads, filename=dssFilePath)
+		return jsonify(loads=loads, outage_locations=microgridup_validation.get_suggested_outage_locations(dssFilePath), filename=dssFilePath)
 	else:
 		print(f'Test run of wizard_to_dss() for {model_dir} complete.')
 		return dssFilePath
@@ -365,9 +367,14 @@ def uploadDss():
 	if file and allowed_file(file.filename):
 		if not os.path.isdir(f'{microgridup.MGU_DIR}/uploads'):
 			os.mkdir(f'{microgridup.MGU_DIR}/uploads')
-		file.save(f'{microgridup.MGU_DIR}/uploads/BASE_DSS_{model_dir}')
-		loads = getLoads(f'{microgridup.MGU_DIR}/uploads/BASE_DSS_{model_dir}')
-		return jsonify(loads=loads, filename=f'{microgridup.MGU_DIR}/uploads/BASE_DSS_{model_dir}')
+		# - Check the file under a temporary name, so that a rejected file doesn't replace the project's current circuit file
+		dss_path = f'{microgridup.MGU_DIR}/uploads/BASE_DSS_{model_dir}'
+		file.save(f'{dss_path}_unchecked')
+		loads = getLoads(f'{dss_path}_unchecked')
+		microgridup_validation.raise_for_circuit_without_loads(loads)
+		outage_locations = microgridup_validation.get_suggested_outage_locations(f'{dss_path}_unchecked')
+		os.replace(f'{dss_path}_unchecked', dss_path)
+		return jsonify(loads=loads, outage_locations=outage_locations, filename=dss_path)
 	raise ValueError('Invalid file.')
 
 @app.route('/getLoadsFromExistingFile', methods=['POST'])
@@ -376,7 +383,7 @@ def getLoadsFromExistingFile():
 	model_dir = request_json['MODEL_DIR']
 	path = f'{microgridup.PROJ_DIR}/{model_dir}/circuit.dss'
 	loads = getLoads(path)
-	return jsonify(loads=loads)
+	return jsonify(loads=loads, outage_locations=microgridup_validation.get_suggested_outage_locations(path))
 
 @app.route('/previewOldPartitions', methods=['POST'])
 def previewOldPartitions():
@@ -477,6 +484,8 @@ def previewPartitions():
 	CRITICAL_LOADS = request_json['critLoads']
 	METHOD = request_json['method']
 	MGQUANT = int(request_json['mgQuantity'])
+	# - A project can't run without a critical load, so a preview is refused without one too
+	microgridup_validation.raise_for_no_critical_loads(CRITICAL_LOADS)
 	# Convert to omd to give coordinates to important grid items. Save in static directory.
 	output_dir = os.path.join('static', 'preview_partition_maps', MODEL_DIR)
 	os.makedirs(output_dir, exist_ok=True)
@@ -590,8 +599,8 @@ def run():
 		# - I'm assuming that if this is true, then the front-end allowed bad data to be sent, so we should inform the user
 		return jsonify(message='No critical loads were specified. The model run was aborted.'), 400
 	data['mgQuantity'] = int(data['mgQuantity'])
-	# - Format faulted lines
-	data['FAULTED_LINES'] = data['FAULTED_LINES'].split(',')
+	# - Format faulted lines. "None (no outage simulation)" posts an empty string, which becomes an empty list
+	data['FAULTED_LINES'] = [name for name in data['FAULTED_LINES'].split(',') if name != '']
 	# - Create microgrids here and not in microgridup.main because it's easier to format the testing data
 	data['MICROGRIDS'] = _get_microgrids(data['CRITICAL_LOADS'], data['MG_DEF_METHOD'], data['mgQuantity'], data['BASE_DSS'], data['PARTITION_PARAMS'], is_wizard_circuit='jsCircuitModel' in data)
 	if len(list(data['MICROGRIDS'].keys())) == 0:
