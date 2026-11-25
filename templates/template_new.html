@@ -738,7 +738,12 @@
 		selectAllButton.type = 'button';
 		selectAllButton.textContent = 'Select All';
 		selectAllButton.addEventListener('click', function() {
-			criticalLoadsForm.querySelectorAll('input[type="checkbox"]').forEach(checkbox => checkbox.checked = true);
+			// - Every box that gets ticked sends a change event, like a tick by hand, so that the page forgets a partition preview that was made for
+			//   the old choice of critical loads
+			criticalLoadsForm.querySelectorAll('input[type="checkbox"]:not(:checked)').forEach(checkbox => {
+				checkbox.checked = true;
+				checkbox.dispatchEvent(new Event('change', {bubbles: true}));
+			});
 		});
 		return selectAllButton;
 	}
@@ -844,6 +849,9 @@
 			window.circuitIsSpecified = true;
 			const loads = responseJson.loads;
 			window.loadsList = loads;
+			// - List the saved circuit's suggested outage locations, then show the project's saved choice
+			window.outageLocationInputView.setOptions(responseJson.outage_locations);
+			window.outageLocationInputView.setValue({{ (','.join(in_data.FAULTED_LINES)) | tojson }});
 			const critLoadsContainer = document.getElementById('critLoads');
 			const manualPartitioningContainer = document.getElementById('manualPartitioningContainer');
 			// Clear contents of critLoads and manualPartitioningContainer.
@@ -967,7 +975,9 @@
 		const modelDir = document.querySelector('input[name="MODEL_DIR"]').value; // modelDir is safe to send over HTTP (unlike full path to uploads folder contained in window.filename). Full path is constructed in backend.
 		const dssPath = document.getElementById('circuitPostCreation');
 		let dssPathIndicator;
-		if (dssPath == undefined) {
+		// - An edited project uses its saved circuit only until a circuit is uploaded or submitted again. After that, window.filename is the new
+		//   circuit's path in the uploads folder, while the circuitPostCreation field still shows the saved file's name
+		if (dssPath == undefined || window.filename !== dssPath.value) {
 			dssPathIndicator = 'DIRECT TO UPLOADS FOLDER';
 		} else {
 			dssPathIndicator = dssPath.value;
@@ -1134,6 +1144,8 @@
 	function attachPartitioningSelectEventHandler() {
 		// Hide/show manual partitioning div. 
 		document.getElementById('partitionMethod').addEventListener('change', function() {
+			// - A preview shows the microgrids of one method, so it is forgotten when the method changes
+			forgetPreviewedMicrogrids();
 			// Show appropriate description in body of partition block.
 			const selectedPartitioningMethod = this.value;
 			const partitionDescriptions = document.querySelectorAll('.partitionDescription');
@@ -1203,6 +1215,8 @@
 			}
 			// Get mgQuantity, if applicable. 
 			const mgQuantity = document.getElementById('minQuantMgs').value || document.getElementById('mgQuantBranch').value || 0; // new_nx_group_branch.
+			// - A new preview replaces the last one, also when the server rejects the new one
+			forgetPreviewedMicrogrids();
 			document.body.style.cursor = 'progress';
 			try {
 				const response = await fetch('previewPartitions', {
@@ -1247,6 +1261,8 @@
 							warningsDiv.appendChild(warningsList);
 							previewDiv.appendChild(warningsDiv);
 						}
+						// - Remember the microgrids on the map, because Run Project sends exactly these
+						window.previewedMicrogrids = responseJson.MICROGRIDS;
 						window.createReoptParametersMVC(responseJson.MICROGRIDS);
 					}
 				} else {
@@ -1270,6 +1286,9 @@
 				document.getElementById('previewPartitionsButton').click();
 			}
 		});
+		// - A preview shows the microgrids for one requested number of microgrids, so it is forgotten when the number changes
+		document.getElementById('minQuantMgs').addEventListener('input', forgetPreviewedMicrogrids);
+		document.getElementById('mgQuantBranch').addEventListener('input', forgetPreviewedMicrogrids); // new_nx_group_branch.
 	}
 
 
@@ -1304,8 +1323,10 @@
 			alert('Please specify a partitioning method.')
 			return 
 		}
-		// Do not proceed if the partitions haven't been previewed
-		if (window.reoptParametersModel === undefined) {
+		// - Do not proceed if the partitions haven't been previewed. Branch, Bottom-Up and Critical Loads make their microgrids at Preview, and the
+		//   page forgets a preview when the critical loads, the method, the number of microgrids or the circuit change after it
+		const methodMakesPreview = ['branch', 'bottomUp', 'criticalLoads'].includes(partitionMethodValue);
+		if (methodMakesPreview && window.previewedMicrogrids === null) {
 			alert('Please preview your microgrid partitions.');
 			return;
 		}
@@ -1314,9 +1335,10 @@
 		for (var pair of form2.entries()) {
 			form1.append(pair[0], pair[1]);
 		}
-		// Specify circuit location.
+		// Specify circuit location. An edited project uses its saved circuit only until a circuit is uploaded or submitted again. After that,
+		// window.filename is the new circuit's path in the uploads folder, while the circuitPostCreation field still shows the saved file's name.
 		const dssPath = document.getElementById('circuitPostCreation');
-		if (dssPath == undefined) {
+		if (dssPath == undefined || window.filename !== dssPath.value) {
 			form1.append('DSS_PATH','Direct to uploads folder.');
 		} else {
 			form1.append('DSS_PATH',dssPath.value);
@@ -1339,7 +1361,9 @@
 		form1.append('CRITICAL_LOADS',JSON.stringify(critLoads));
 		// Append MG_DEF_METHOD. 
 		const selectedPartitioningMethod = document.getElementById('partitionMethod').value;
-		form1.append('MG_DEF_METHOD',selectedPartitioningMethod);
+		// - A run after a preview must use exactly the microgrids on the preview map. They are sent as finished microgrids with no method, the way
+		//   an edited project sends its saved microgrids, so that the server uses them as they are instead of partitioning the circuit again
+		form1.append('MG_DEF_METHOD', methodMakesPreview ? '' : selectedPartitioningMethod);
 		// Do not proceed if loadGrouping/manual is selected and no partitions are created.
 		const manualPartitioningContainer = document.getElementById('manualPartitioningContainer');
 		const isManualPartitioningContainerVisible = manualPartitioningContainer && manualPartitioningContainer.offsetParent !== null;
@@ -1403,6 +1427,8 @@
 					PARTITION_PARAMS.switch[mgId] = val;
 				}
 			});
+		} else if (methodMakesPreview) {
+			PARTITION_PARAMS = window.previewedMicrogrids;
 		} else if ((document.getElementById('circuitPostCreation')) && (selectedPartitioningMethod == '')) {
 			PARTITION_PARAMS = {{ in_data.MICROGRIDS | tojson }};
 		}
@@ -1497,6 +1523,31 @@
 	window.onEditFlow = false;
 	window.loadsList = []; // Cached full list of load names, set once known so the manual/loadGrouping "Go" handler can build per-microgrid multi-select widgets later.
 	window.loadAssignmentState = {}; // Canonical loadName -> mgId|null map driving the multi-select widgets and submit-time PARTITION_PARAMS.pairings collection.
+	// - The microgrids on the partition preview map, or null when there is no preview. Branch, Bottom-Up and Critical Loads run with exactly these
+	window.previewedMicrogrids = null;
+
+	/** Forget the partition preview. This happens when something that the preview was made from changes, which is the choice of critical loads, the
+	 *  partition method, the requested number of microgrids or the circuit. Remove the map and the microgrids that came with it, together with
+	 *  their parameter overrides in Step 5, so that the page never shows one set of microgrids while Run Project would use another. Run Project
+	 *  then asks for a new preview. Nothing happens when there is no preview. */
+	function forgetPreviewedMicrogrids() {
+		if (window.previewedMicrogrids === null) {
+			return;
+		}
+		window.previewedMicrogrids = null;
+		document.getElementById('partitionsPreviewDiv').innerHTML = '';
+		window.createReoptParametersMVC({});
+	}
+
+	/** No circuit is submitted any more. This happens when the user switches between the two circuit choices, chooses or removes a circuit file,
+	 *  or changes the circuit builder, its latitude or its longitude. Empty everything that the page took from the last submitted circuit, so that
+	 *  the page never shows one circuit while Run Project would use another. The circuit counts as submitted again after Upload or "Submit circuit". */
+	function forgetSubmittedCircuit() {
+		window.filename = '';
+		window.circuitIsSpecified = false;
+		document.getElementById('critLoads').innerHTML = '';
+		window.outageLocationInputView.clearOptions();
+	}
 
 	document.addEventListener('DOMContentLoaded', function() {
 		// Clone partitioning div for resetting.
@@ -1517,18 +1568,20 @@
 			if (event.target.matches('button.remove-btn')) {
 				const chunk = event.target.closest('.chunk');
 				const fileInput = chunk.querySelector('input.file-input');
+				const fileInputName = fileInput.getAttribute('name');
 				// Clear the file input value and hide the Remove File button.
 				fileInput.value = '';
 				event.target.style.display = 'none';
 				toggleRemoveButton(chunk);
+				// - Without its file, the circuit is no longer submitted
+				if (fileInputName === 'BASE_DSS_NAME') {
+					forgetSubmittedCircuit();
+				}
 
 				// Special behavior if the user removes the circuit.
 				if (event.target.id === 'remove-circuit-button') {
-					// Remove staged filename.
-					window.filename = '';
 					document.getElementById('wizard').disabled = false;
-					// Clear critical loads select and reset partitioning.
-					document.getElementById('critLoads').innerHTML = '';
+					// Reset partitioning.
 					document.getElementById('stepThree').style.display = 'block';
 					document.getElementById('oldPartitionDiv').style.display = 'none';
 					document.getElementById('previewPartitionsButton').disabled = false;
@@ -1548,8 +1601,19 @@
 			if (event.target.matches('input.file-input')) {
 				const chunk = event.target.closest('.chunk');
 				toggleRemoveButton(chunk);
+				// - A newly chosen circuit file is not the submitted circuit until Upload is pressed
+				if (event.target.getAttribute('name') === 'BASE_DSS_NAME') {
+					forgetSubmittedCircuit();
+				}
 			}
 		});
+
+		// - A preview shows the microgrids for one choice of critical loads in one circuit, so it is forgotten when either one changes. A tick in the
+		//   list of critical loads sends a change event. The list is replaced when a circuit is uploaded or submitted and emptied when the page
+		//   forgets the submitted circuit, and the MutationObserver reports both
+		const critLoadsContainer = document.getElementById('critLoads');
+		critLoadsContainer.addEventListener('change', forgetPreviewedMicrogrids);
+		new MutationObserver(forgetPreviewedMicrogrids).observe(critLoadsContainer, {childList: true, subtree: true});
 
 		// Limit characters in description textarea.
 		document.getElementById('DESCRIPTION').addEventListener('input', limitTextareaCharacters);
@@ -1580,12 +1644,15 @@
 			input.checked = false;
 		});
 		document.querySelectorAll('input[name="circuit"]').forEach(function(input) {
-			input.addEventListener('click', function() {
+			// - A change event only fires when the user switches from one choice to the other, so a click on the selected choice does nothing
+			input.addEventListener('change', function() {
 				const test = input.value;
 				document.querySelectorAll('div.desc').forEach(function(desc) {
 					desc.style.display = 'none';
 				});
 				document.getElementById('circuit' + test).style.display = 'block';
+				// - After a switch, no circuit is submitted until the next Upload or "Submit circuit"
+				forgetSubmittedCircuit();
 				if (test === 'Creator') {
 					const circuitElements = [
 						{
@@ -1634,21 +1701,16 @@
 						window.circuitModel.addElement(e);
 						// - The CircuitTableView is already a graph observer, so it will become an observer of every new element that is added
 						// - The CircuitUserControlsView is already a graph observer, so it will become an observer of every new element that is added
-						// - The OutageLocationInputview is already a graph observer, so it will become an observer of every new element that is added
 					}
-					window.outageLocationInputView.updateInput();
 				} else {
 					for (const e of window.circuitModel.getElements((e) => e.getProperty('type') === 'substation')) {
 						window.circuitModel.removeElement(e.fullName);
 					}
-					window.outageLocationInputView.setValue("{{','.join(in_data.FAULTED_LINES)}}");
 				}
 			});
 		});
 		// If user clicked edit, show used circuit.
 		if (document.getElementById('circuitPostCreation')) {
-			window.circuitIsSpecified = true;
-			window.filename = document.getElementById('circuitPostCreation').value;
 			const MODEL_DIR = document.getElementsByName('MODEL_DIR')[0].value;
 			window.onEditFlow = true;
 			// Get allDataInputs.json params from Jinja as variables in the script.
@@ -1668,15 +1730,16 @@
 				for (const props of window.editFlowJsCircuitModel) {
 					window.circuitModel.addElement(new window.CircuitElement(props));
 				}
-				// Refresh outage location options from loaded topology, then re-apply saved faulted lines.
-				window.outageLocationInputView.updateInput();
-				window.outageLocationInputView.setValue("{{','.join(in_data.FAULTED_LINES)}}");
 			} else {
 				// Uploaded circuit: existing behavior unchanged.
 				document.getElementById('circuitUpload').style.display = 'block';
 				document.getElementById('upload').checked = true;
 				document.getElementById('wizard').disabled = true;
 			}
+			// - The project's saved circuit is the submitted circuit. This comes after the saved elements are loaded into the circuit builder,
+			//   because every change to the builder makes the page forget the submitted circuit
+			window.circuitIsSpecified = true;
+			window.filename = document.getElementById('circuitPostCreation').value;
 			// Load the existing loads.csv into the wizard's CSV parser so the "add load" dropdown is populated,
 			// whether the circuit was originally built with the wizard or uploaded (e.g. if the user later
 			// removes an uploaded circuit and switches to "Build circuit manually").
@@ -1736,6 +1799,8 @@
 				window.circuitIsSpecified = true;
 				const loads = responseJson.loads;
 				window.loadsList = loads;
+				// - List the new circuit's suggested outage locations. This also puts the dropdown on "None (no outage simulation)"
+				window.outageLocationInputView.setOptions(responseJson.outage_locations);
 				// Clear critLoads.
 				const critLoadsContainer = document.getElementById('critLoads');
 				critLoadsContainer.innerHTML = '';
@@ -1843,9 +1908,8 @@
 	const circuitModel = new CircuitModel();
 	window.circuitModel = circuitModel;
 	const circuitController = new CircuitController(circuitModel);
-	const outageLocationInputView = new OutageLocationInputView(circuitController);
+	const outageLocationInputView = new OutageLocationInputView();
 	window.outageLocationInputView = outageLocationInputView;
-	circuitModel.addObserver(outageLocationInputView);
 	const view = new CircuitTableView(circuitController);
 	circuitModel.addObserver(view);
 	const csvLoadParser = new CsvLoadParser();
@@ -1856,12 +1920,33 @@
 	document.getElementById('outageLocationInputInsert').append(outageLocationInputView.modal.divElement);
 	document.getElementById('circuitCreator').append(view.modal.divElement);
 	document.getElementById('circuitCreator').append(controls.modal.divElement);
-	outageLocationInputView.setValue("{{','.join(in_data.FAULTED_LINES)}}");
+	// - A change to the circuit builder after "Submit circuit" leaves the submitted circuit out of date, so the page forgets it and asks for the
+	//   circuit to be submitted again. The observer watches every element of the builder, the way the CircuitTableView does
+	class SubmittedCircuitObserver {
+		handleNewElement(element) {
+			circuitModel.addObserver(this, element.fullName);
+			forgetSubmittedCircuit();
+		}
+		handleRemovedElement(element) {
+			circuitModel.removeObserver(this, element.fullName);
+			forgetSubmittedCircuit();
+		}
+		handleChangedProperty(element, property, oldPropertyVal, namespace) {
+			forgetSubmittedCircuit();
+		}
+	}
+	circuitModel.addObserver(new SubmittedCircuitObserver());
+	// - "Submit circuit" places the circuit at the latitude and longitude, so a change to either one also leaves the submitted circuit out of date
+	document.getElementById('circuitCreator').addEventListener('change', function(event) {
+		if (['latitude', 'longitude'].includes(event.target.getAttribute('name'))) {
+			forgetSubmittedCircuit();
+		}
+	});
+	// - Other scripts on this page reach the parser through window, e.g. to list the load names after a load CSV is parsed
+	window.csvLoadParser = csvLoadParser;
 	const csvLoadParserInsert = document.getElementById('csvLoadParserInsert');
 	if (csvLoadParserInsert !== null) {
 		csvLoadParserInsert.replaceWith(csvLoadParser.modal.divElement);
-	} else {
-		window.csvLoadParser = csvLoadParser;
 	}
 	// - Create microgrid-specific REopt parameters widget
 	const reoptParametersModel = new REoptParametersModel();
