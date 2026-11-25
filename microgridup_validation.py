@@ -8,16 +8,22 @@ from omf.solvers.opendss import dssConvert
 '''
 - Validation logic:
     - Unrecoverable errors
-        - A ValueError is raised if a microgrid has no loads at all. If form_microgrids() also finds no switch for it (e.g. a microgrid that starts at
-          the substation's source bus), it raises a SwitchNotFoundError instead, because it checks the switch first
-        - A run is rejected if no load in the whole project is critical (run() in microgridup_gui.py returns a 400 response instead of raising)
+        - A ValueError is raised if the whole circuit has no loads. The GUI checks this when the user uploads a circuit file or submits a circuit
+          built on the page
+        - A ValueError is raised if one microgrid of a partition has no loads, although the circuit has loads. If form_microgrids() also finds no
+          switch for it (e.g. a microgrid that starts at the substation's source bus), it raises a SwitchNotFoundError instead, because it checks
+          the switch first
+        - A ValueError is raised if no critical load is selected, when a partition is previewed and when microgridup.main() starts a run. The GUI's
+          Run rejects the same case itself (run() in microgridup_gui.py returns a 400 response instead of raising)
         - A ValueError is raised if a Manual or Load Grouping group is empty, has a node that isn't in the circuit, or spans more than one
           substation's tree (or, for a wizard circuit, more than one feeder bus or none)
+        - A ValueError is raised if a partition method makes no microgrids
         - A ValueError is raised if a load is in more than one microgrid
         - A ValueError is raised if a microgrid's switch isn't a line or transformer, or opening it leaves some of the microgrid's loads connected to
           the substation
         - A ValueError is raised if a microgrid's generation bus isn't a bus, has no coordinates, or can't reach the microgrid's loads when every
           microgrid's switch is open
+        - A ValueError is raised if a microgrid has no "parameter_overrides" key. In the GUI that means Run was pressed without a partition preview
         - A ValueError is raised if an Outage Location isn't a line in the circuit
         - A ValueError is raised if the load CSV can't be read, doesn't have exactly 8760 rows, or lacks a column for a microgrid load
         - A ValueError is raised if the specific load growth isn't a JSON object of load CSV columns and numeric percentages of at least -100
@@ -35,6 +41,37 @@ from omf.solvers.opendss import dssConvert
         - A warning is given if the outages CSV has names that aren't in the circuit, or durations that don't match their start and finish times
         - A warning is given if a custom URDB rate has negative rates, or energy tier limits that REopt simplifies
 '''
+
+################################################################################################################
+# - The circuit. The GUI checks it when the user uploads a circuit file or submits a circuit built on the page
+################################################################################################################
+
+def raise_for_circuit_without_loads(load_names):
+	'''
+	Raise a ValueError if the circuit has no loads. Every microgrid needs at least one load, so a project can't be run on a circuit without them
+
+	:param load_names: the names of the loads in the circuit
+	:type load_names: list
+	:rtype: None
+	'''
+	if len(load_names) == 0:
+		raise ValueError('The circuit has no loads. Add at least one load, then submit or upload the circuit again.')
+
+##################################################################################################################
+# - The critical loads. The GUI checks them when it previews a partition, and microgridup.main() when a run starts
+##################################################################################################################
+
+def raise_for_no_critical_loads(critical_loads):
+	'''
+	Raise a ValueError if no critical load is selected. A microgrid exists to keep critical loads powered during an outage, so a partition can't be
+	previewed and a run can't start without one. The GUI's Run rejects the same case itself, in run() in microgridup_gui.py
+
+	:param critical_loads: the names of the critical loads that the user selected
+	:type critical_loads: list or tuple
+	:rtype: None
+	'''
+	if len(critical_loads) == 0:
+		raise ValueError('No critical loads are selected. Select at least one critical load and try again.')
 
 ####################################################################################################################
 # - Partition groups: Manual and Load Grouping check these before form_microgrids() turns the groups into microgrids
@@ -234,10 +271,29 @@ def raise_for_missing_intended_microgrids(MICROGRIDS, partition_params_json):
 			'microgrid or remove them from the partitioner and try again.')
 
 
+def raise_for_microgrids_without_parameter_overrides(MICROGRIDS):
+	'''
+	Raise a ValueError if a microgrid has no "parameter_overrides" entry at all. Every microgrid has the entry, and it is simply empty when the
+	user overrides nothing, so this check never asks the user to enter overrides. The design step reads the entry of every microgrid, so a
+	microgrid without one would crash the run after it has started. The GUI's page sends an entry only for the microgrids that it knows, and it
+	learns them when the user previews the partitions, so a missing entry means that the run's partitions were never previewed
+
+	:param MICROGRIDS: the microgrid definitions keyed by microgrid name, after the GUI's Run has attached the overrides that the page sent
+	:type MICROGRIDS: dict or MappingProxyType
+	:rtype: None
+	'''
+	missing = [mg_name for mg_name, mg in MICROGRIDS.items() if 'reopt_inputs' not in mg.get('parameter_overrides', {})]
+	if missing:
+		raise ValueError(f'Please preview your microgrid partitions, then run the project again. The run has no parameter overrides for {_name_list(missing)}, '
+			'which the page only sends for microgrids that were previewed. A run that is started from Python needs a "parameter_overrides" dict that holds '
+			'a "reopt_inputs" dict in every microgrid.')
+
+
 def raise_for_invalid_microgrids(MICROGRIDS, omd, partition_method=''):
 	'''
-	Run every check that stops the microgrids from being run, in order: a load in more than one microgrid, a switch that doesn't island its microgrid,
-	a generation bus that isn't a bus the microgrid's loads can reach. The GUI calls it at Preview and Run, and microgridup.main() when a run starts
+	Run every check that stops the microgrids from being run, in order: no microgrids at all, a load in more than one microgrid, a switch that doesn't
+	island its microgrid, a generation bus that isn't a bus the microgrid's loads can reach. The GUI calls it at Preview and Run, and microgridup.main()
+	when a run starts
 
 	:param MICROGRIDS: the microgrid definitions keyed by microgrid name, as made by form_microgrids()
 	:type MICROGRIDS: dict or MappingProxyType
@@ -247,9 +303,22 @@ def raise_for_invalid_microgrids(MICROGRIDS, omd, partition_method=''):
 	:type partition_method: str
 	:rtype: None
 	'''
+	raise_for_no_microgrids(MICROGRIDS)
 	raise_for_loads_in_multiple_microgrids(MICROGRIDS, partition_method)
 	raise_for_invalid_switches(MICROGRIDS, omd)
 	raise_for_invalid_gen_buses(MICROGRIDS, omd)
+
+
+def raise_for_no_microgrids(MICROGRIDS):
+	'''
+	Raise a ValueError if there are no microgrids. A project needs at least one microgrid to design, and a partition method can come back with none
+
+	:param MICROGRIDS: the microgrid definitions keyed by microgrid name, as made by form_microgrids()
+	:type MICROGRIDS: dict or MappingProxyType
+	:rtype: None
+	'''
+	if len(MICROGRIDS) == 0:
+		raise ValueError('No microgrids were made. Please choose a different partitioning method or change the other partitioning parameters.')
 
 
 def raise_for_loads_in_multiple_microgrids(MICROGRIDS, partition_method=''):
@@ -567,6 +636,43 @@ def faulted_lines_in_graph(path_to_dss, faulted_lines):
 	assert isinstance(faulted_lines, tuple)
 	omd = dssConvert.dssToOmd(path_to_dss, '', write_out=False)
 	return not _outage_locations_that_are_not_lines(faulted_lines, omd)
+
+
+def get_suggested_outage_locations(path_to_dss):
+	'''
+	Return the lines that the GUI lists in its Outage Location(s) dropdown, which are the first line on each path out of the substation. An outage on
+	one of them cuts everything behind it off from the grid, which is the outage that the microgrids are sized for. The search starts at the
+	substation, passes through transformers and regulators, and stops at the first line on each path, so no line behind another line is returned
+
+	:param path_to_dss: the path to the circuit file
+	:type path_to_dss: str
+	:return: the names of the suggested lines, sorted
+	:rtype: list
+	'''
+	omd = dssConvert.dssToOmd(path_to_dss, '', write_out=False)
+	G = _circuit_graph(omd)[0]
+	# - Find the lines between each pair of buses. The graph has one edge per pair of buses, so the graph alone can't tell a line from a transformer
+	lines_by_bus_pair = {}
+	for ob in omd.values():
+		if ob.get('object') == 'line' and 'from' in ob and 'to' in ob:
+			bus_pair = frozenset((str(ob['from']).split('.')[0], str(ob['to']).split('.')[0]))
+			lines_by_bus_pair.setdefault(bus_pair, []).append(ob.get('name'))
+	# - Walk outward from the substation, ignoring edge directions because a line can be written from either end. A line is suggested and not
+	#   crossed. Anything else (a transformer, a regulator, a load on its bus) is crossed
+	connections = G.to_undirected()
+	suggested_lines = set()
+	visited = set(_substation_buses(omd, G))
+	to_visit = list(visited)
+	while to_visit:
+		node = to_visit.pop()
+		for neighbor in connections.neighbors(node):
+			lines = lines_by_bus_pair.get(frozenset((node, neighbor)))
+			if lines:
+				suggested_lines.update(lines)
+			elif neighbor not in visited:
+				visited.add(neighbor)
+				to_visit.append(neighbor)
+	return sorted(suggested_lines)
 
 
 def _outage_locations_that_are_not_lines(faulted_lines, omd):
@@ -1179,15 +1285,16 @@ def _custom_rate_text(inputs):
 
 def raise_for_invalid_run_inputs(data):
 	'''
-	Run every check on the rest of the inputs, in order: the Outage Location(s), the load CSV, the specific load growth, the additional load shape,
-	the historical outages CSV and each REopt run's electricity rate. The GUI's Run calls it after the microgrids are made and their parameter
-	overrides are attached, and microgridup.main() calls it through raise_for_invalid_inputs()
+	Run every check on the rest of the inputs, in order: the microgrids' parameter overrides, the Outage Location(s), the load CSV, the specific load
+	growth, the additional load shape, the historical outages CSV and each REopt run's electricity rate. The GUI's Run calls it after the microgrids
+	are made and their parameter overrides are attached, and microgridup.main() calls it through raise_for_invalid_inputs()
 
 	:param data: the run's inputs: BASE_DSS, FAULTED_LINES, LOAD_CSV, LOAD_GROWTH_SPECIFIC, ADDITIONAL_LOADSHAPE_CSV, ADDITIONAL_LOADSHAPE_METER,
 		OUTAGE_CSV, REOPT_INPUTS and MICROGRIDS with their parameter overrides attached
 	:type data: dict or MappingProxyType
 	:rtype: None
 	'''
+	raise_for_microgrids_without_parameter_overrides(data['MICROGRIDS'])
 	omd = dssConvert.dssToOmd(data['BASE_DSS'], '', RADIUS=0.0004, write_out=False)
 	raise_for_invalid_outage_locations(data['FAULTED_LINES'], omd)
 	raise_for_invalid_loads_csv(data['LOAD_CSV'], data['MICROGRIDS'])
@@ -1201,13 +1308,14 @@ def raise_for_invalid_run_inputs(data):
 
 def raise_for_invalid_inputs(data):
 	'''
-	Run every check that stops a run, in order: a microgrid with no loads, the microgrid checks and the checks on the rest of the inputs.
-	microgridup.main() calls it when a run starts, for callers that don't go through the GUI, which has already made the same checks
+	Run every check that stops a run, in order: no critical load, a microgrid with no loads, the microgrid checks and the checks on the rest of the
+	inputs. microgridup.main() calls it when a run starts, for callers that don't go through the GUI, which has already made the same checks
 
 	:param data: the run's inputs as microgridup.main() receives them, with the circuit at BASE_DSS
 	:type data: dict or MappingProxyType
 	:rtype: None
 	'''
+	raise_for_no_critical_loads(data['CRITICAL_LOADS'])
 	raise_for_microgrids_without_loads(data)
 	omd = dssConvert.dssToOmd(data['BASE_DSS'], '', RADIUS=0.0004, write_out=False)
 	raise_for_invalid_microgrids(data['MICROGRIDS'], omd)
