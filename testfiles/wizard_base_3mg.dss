@@ -1,34 +1,34 @@
 clear 
 set defaultbasefrequency=60 
-new object=circuit.3mgs_wizard
-new object=vsource.sub basekv=115 bus1=sub_bus.1.2.3 pu=1.00 r1=0 x1=0.0001 r0=0 x0=0.0001 
-new object=line.regNone phases=3 bus1=sub_bus.1.2.3 bus2=regNone_end.1.2.3 length=1333 units=ft 
-new object=load.684_command_center bus1=regNone_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.692_warehouse2 bus1=regNone_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.611_runway bus1=regNone_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.652_residential bus1=regNone_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.670a_residential2 bus1=regNone_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.670b_residential2 bus1=regNone_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.670c_residential2 bus1=regNone_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=circuit.3mgs_wizard 
+new object=vsource.sub basekv=2.4 bus1=sub_bus.1.2.3 pu=1.00 r1=0 x1=0.0001 r0=0 x0=0.0001 
+new object=line.regnone phases=3 bus1=sub_bus.1.2.3 bus2=regnone_end.1.2.3 length=1333 units=ft 
+new object=load.684_command_center bus1=regnone_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.692_warehouse2 bus1=regnone_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.611_runway bus1=regnone_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.652_residential bus1=regnone_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.670a_residential2 bus1=regnone_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.670b_residential2 bus1=regnone_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.670c_residential2 bus1=regnone_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
 new object=line.reg0 phases=3 bus1=sub_bus.1.2.3 bus2=reg0_end.1.2.3 length=1333 units=ft 
-new object=load.634a_data_center bus1=reg0_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.634b_radar bus1=reg0_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.634c_atc_tower bus1=reg0_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=generator.solar_634_existing bus1=reg0_end.1 phases=1 kv=0.277 kw=440 pf=1 
-new object=storage.battery_634_existing bus1=reg0_end.1 phases=1 kv=0.277 kwrated=79 kwhstored=307 kwhrated=307 dispmode=follow %charge=100 %discharge=100 %effcharge=96 %effdischarge=96 
+new object=load.634a_data_center bus1=reg0_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.634b_radar bus1=reg0_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.634c_atc_tower bus1=reg0_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=generator.solar_634_existing bus1=reg0_end.1.2.3 phases=3 kv=2.4 kw=440 pf=1 
+new object=storage.battery_634_existing bus1=reg0_end.1.2.3 phases=3 kv=2.4 kwrated=79 kwhstored=307 kwhrated=307 dispmode=follow %charge=100 %discharge=100 %effcharge=96 %effdischarge=96 
 new object=line.reg1 phases=3 bus1=sub_bus.1.2.3 bus2=reg1_end.1.2.3 length=1333 units=ft 
-new object=load.675a_hospital bus1=reg1_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.675b_residential1 bus1=reg1_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.675c_residential1 bus1=reg1_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.675a_hospital bus1=reg1_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.675b_residential1 bus1=reg1_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.675c_residential1 bus1=reg1_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
 new object=generator.fossil_675_existing bus1=reg1_end.1.2.3 phases=3 kw=265 pf=1 kv=2.4 xdp=0.27 xdpp=0.2 h=2 
 new object=line.reg2 phases=3 bus1=sub_bus.1.2.3 bus2=reg2_end.1.2.3 length=1333 units=ft 
-new object=load.645_hangar bus1=reg2_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
-new object=load.646_office bus1=reg2_end.1 phases=1 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.645_hangar bus1=reg2_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
+new object=load.646_office bus1=reg2_end.1.2.3 phases=3 conn=wye model=1 kv=2.4 kw=1155 kvar=660 
 makebuslist 
-setbusxy bus=sub_bus y=39.780781000000005 x=-89.652858075 
-setbusxy bus=regNone_end y=39.776230500000004 x=-89.654743075 
-setbusxy bus=reg0_end y=39.7805155 x=-89.64800907499999 
-setbusxy bus=reg1_end y=39.783620000000006 x=-89.65672907499999 
-setbusxy bus=reg2_end y=39.784825000000005 x=-89.65171307499999 
+setbusxy bus=sub_bus y=39.78168784414268 x=-89.65006332695158 
+setbusxy bus=regnone_end y=39.78171223159207 x=-89.65009106591991 
+setbusxy bus=reg0_end y=39.781695939926486 x=-89.65009928054805 
+setbusxy bus=reg1_end y=39.78168388076515 x=-89.65009992922629 
+setbusxy bus=reg2_end y=39.7816783682038 x=-89.6500989167127 
 set voltagebases=[115,4.16,0.48]
 calcvoltagebases
